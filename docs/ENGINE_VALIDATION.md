@@ -22,8 +22,8 @@ diffusers pipeline (`inference/generate_rust.py`).
 
 | Claim | Evidence |
 |---|---|
-| Cross-stream CUDA event handoff (Rust's transfer stream → PyTorch's compute stream) is correct with zero CPU-side synchronization | `inference/test_dlpack.py`: 6 trials, different fill values, real DLPack tensor read back via `torch.Tensor.sum()` with no `torch.cuda.synchronize()` call anywhere in the test. All 6 correct. |
-| The engine reads the real checkpoint correctly through the whole pipeline (mmap → pinned → VRAM → DLPack → `torch.Tensor`) | `inference/test_engine_real_model.py` against the real 18.16GB model: all 16 tensors of `transformer_blocks.7` (872,416,256 bytes) byte-identical to an independent, from-scratch Python parse of the actual shard file (not reusing any Rust or `safetensors`-package code). |
+| Cross-stream CUDA event handoff (Rust's transfer stream → PyTorch's compute stream) is correct with zero CPU-side synchronization | `inference/tests/test_dlpack.py`: 6 trials, different fill values, real DLPack tensor read back via `torch.Tensor.sum()` with no `torch.cuda.synchronize()` call anywhere in the test. All 6 correct. |
+| The engine reads the real checkpoint correctly through the whole pipeline (mmap → pinned → VRAM → DLPack → `torch.Tensor`) | `inference/tests/test_engine_real_model.py` against the real 18.16GB model: all 16 tensors of `transformer_blocks.7` (872,416,256 bytes) byte-identical to an independent, from-scratch Python parse of the actual shard file (not reusing any Rust or `safetensors`-package code). |
 | Buffer reuse (2 VRAM slots, 32 blocks) does not corrupt data | Same test: forced a genuine eviction (fetched 2 more distinct blocks to cycle both ring slots), asserted `transfer_count` actually incremented (i.e. the eviction was real, not accidentally still a cache hit), then re-verified all 16 tensors byte-identical to the first fetch. |
 | The full pipeline, with the transformer entirely served by the Rust engine, produces correct output | Pixel diff against the plain-diffusers baseline (`inference/generate.py`, same prompt/seed/resolution/steps/dtype): **0 pixels differ, out of 1,048,576** (1024×1024, RGB). See below. |
 | No silent fallback on engine failure | Observed directly during development: pointing the engine at the real model *without* `trust_root` raises `RuntimeError` (the loader's symlink-escape rejection, propagated through `EngineError`/`PyErr`) and the script exits nonzero — never fell through to any other loading path, because there isn't one in `generate_rust.py`. |
@@ -132,7 +132,7 @@ required the actual RTX 3060 and the actual downloaded model.
 
 At the user's request, tried streaming an int8-quantized version of the
 transformer through the same engine, to isolate whether halved transfer
-volume (not just BF16) moves generation time. `inference/quantize_transformer.py`
+volume (not just BF16) moves generation time. `inference/experimental/quantize_transformer.py`
 (kept in the repo; its ~9GB output directory was deleted, not delivered)
 row-wise-quantizes every 2D weight tensor via
 `bitsandbytes.functional.int8_vectorwise_quant` — exactly what
@@ -178,6 +178,6 @@ here rather than chase it further.
 real and correctly delivered through this engine unmodified; a *working*
 int8 compute path for this specific model was not achieved and is not
 part of this delivery. `quantize_transformer.py` and
-`inference/generate_rust_int8.py` are kept as a documented, reproducible
+`inference/experimental/generate_rust_int8.py` are kept as a documented, reproducible
 starting point for anyone who wants to pick this up, not as a working
 feature.

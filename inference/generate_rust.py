@@ -23,6 +23,7 @@ diffusers' own loader/offload machinery:
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -30,12 +31,17 @@ import uuid
 import torch
 from accelerate import cpu_offload, init_empty_weights
 from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline, Flux2Transformer2DModel, FlowMatchEulerDiscreteScheduler
+from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer, Qwen3ForCausalLM
 
 import streamloader_engine as se
 
-HUB = "/home/nobus/.cache/huggingface/hub/models--black-forest-labs--FLUX.2-klein-9B"
-SNAPSHOT = f"{HUB}/snapshots/92196c8e11f7b6cf2b7493e037d8c5345c559216"
+# No hardcoded local path: snapshot_download resolves (and downloads if
+# needed) using the caller's own HF cache -- portable across machines,
+# no username/home-directory baked into the script.
+MODEL_ID = "black-forest-labs/FLUX.2-klein-9B"
+SNAPSHOT = snapshot_download(MODEL_ID, allow_patterns=["transformer/*", "*.json", "*.txt"])
+HUB = os.path.dirname(os.path.dirname(SNAPSHOT))  # models--org--name/ -- needed as the engine's trust_root
 TRANSFORMER_DIR = f"{SNAPSHOT}/transformer"
 PINNED_BUDGET = 20 * 1024 * 1024 * 1024  # transformer is ~18.16GB
 VRAM_SLOTS = 2
@@ -54,13 +60,13 @@ def build_meta_transformer():
 
 def build_pipeline(device):
     print("loading scheduler/tokenizer/text_encoder/vae (real weights, separate offload policy)...")
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(SNAPSHOT, subfolder="scheduler")
-    tokenizer = AutoTokenizer.from_pretrained(SNAPSHOT, subfolder="tokenizer")
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_ID, subfolder="scheduler")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, subfolder="tokenizer")
 
-    text_encoder = Qwen3ForCausalLM.from_pretrained(SNAPSHOT, subfolder="text_encoder", dtype=torch.bfloat16)
+    text_encoder = Qwen3ForCausalLM.from_pretrained(MODEL_ID, subfolder="text_encoder", dtype=torch.bfloat16)
     cpu_offload(text_encoder, execution_device=device)
 
-    vae = AutoencoderKLFlux2.from_pretrained(SNAPSHOT, subfolder="vae", dtype=torch.bfloat16)
+    vae = AutoencoderKLFlux2.from_pretrained(MODEL_ID, subfolder="vae", dtype=torch.bfloat16)
     # Decode one image of the batch at a time instead of all at once --
     # off by default. This is what actually reduces VAE decode's peak
     # VRAM for batch>1 (not enable_tiling(), which splits large per-image

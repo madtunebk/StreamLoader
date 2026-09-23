@@ -6,3 +6,5 @@ __pycache__/
 /inference/quantized_model/
 *.safetensors
 *.so
+/inference/output/
+/output/

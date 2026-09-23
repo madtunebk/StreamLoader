@@ -11,6 +11,27 @@ into a Rust heap buffer.
 model computation (no attention, no sampling, no VAE). CPU-only, no
 Python/PyTorch/CUDA toolkit required to build or run it.
 
+For the GPU weight-streaming engine built on top of this loader (`engine/`,
+Rust + PyO3, serves real DiT transformer weights to PyTorch via DLPack) and
+the inference scripts that drive it (`inference/`), see `docs/ENGINE.md`.
+
+## Documentation
+
+- [`docs/BUILD.md`](docs/BUILD.md) — building/installing the `engine/`
+  PyO3 extension and running inference
+- [`docs/ENGINE.md`](docs/ENGINE.md) — the GPU weight-streaming engine
+  (pinned-cache + reusable VRAM buffers + CUDA-event prefetch)
+- [`docs/RESIDENT_POOL_TODO.md`](docs/RESIDENT_POOL_TODO.md) — ResidentPool
+  (static VRAM residency) design, benchmarks, and staged implementation log
+- [`docs/DESIGN.md`](docs/DESIGN.md) — this loader crate's internal design
+- [`docs/VALIDATION.md`](docs/VALIDATION.md) /
+  [`docs/ENGINE_VALIDATION.md`](docs/ENGINE_VALIDATION.md) — measured
+  correctness/performance evidence for the loader and the engine
+  respectively
+- [`docs/hardware.md`](docs/hardware.md) — baseline hardware numbers this
+  work was measured against
+- [`docs/prompt.md`](docs/prompt.md) — the original ResidentPool task brief
+
 ## Build
 
 ```bash
@@ -164,7 +185,7 @@ rule.
   time is not a proxy for raw disk bandwidth or any GPU transfer speed.
 - No RAM-budget policy, shared cache across GPU workers, or pinned-memory
   staging exists in this crate — those are explicitly deferred to a later
-  milestone (see DESIGN.md). This loader cannot reproduce the older
+  milestone (see `docs/DESIGN.md`). This loader cannot reproduce the older
   Python reference implementation's RAM-doubling bug (a pageable cache
   plus a separate pinned cache of the same block, neither ever evicted)
   because it has no persistent cache of any kind to double.
@@ -194,7 +215,7 @@ cache unless you have actually controlled for that (e.g. dropped caches
 yourself — this tool does not, and never requires, privileged cache
 flushing).
 
-See `VALIDATION.md` for actual measured numbers (including peak RSS)
+See `docs/VALIDATION.md` for actual measured numbers (including peak RSS)
 against both the generated fixture and a real 18.16GB, 233-tensor
 diffusers checkpoint.
 
@@ -206,5 +227,5 @@ cargo fmt --check
 cargo clippy --all-targets
 ```
 
-See `VALIDATION.md` for the full list of what each test covers and the
+See `docs/VALIDATION.md` for the full list of what each test covers and the
 exact recorded output of the last run.

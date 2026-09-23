@@ -6,16 +6,21 @@ Edit the constants below directly, like a plain diffusers example script.
 """
 
 import json
+import os
 
 import torch
 from accelerate import cpu_offload, init_empty_weights
 from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline, Flux2Transformer2DModel, FlowMatchEulerDiscreteScheduler
+from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer, Qwen3ForCausalLM
 
 import streamloader_engine as se
 
-HUB = "/home/nobus/.cache/huggingface/hub/models--black-forest-labs--FLUX.2-klein-9B"
-SNAPSHOT = f"{HUB}/snapshots/92196c8e11f7b6cf2b7493e037d8c5345c559216"
+# No hardcoded local path: resolved (and downloaded if needed) from the
+# caller's own HF cache -- portable across machines.
+MODEL_ID = "black-forest-labs/FLUX.2-klein-9B"
+SNAPSHOT = snapshot_download(MODEL_ID, allow_patterns=["transformer/*", "*.json", "*.txt"])
+HUB = os.path.dirname(os.path.dirname(SNAPSHOT))  # models--org--name/ -- the engine's trust_root
 TRANSFORMER_DIR = f"{SNAPSHOT}/transformer"
 
 PROMPT = "a fancy speech bubble, cosmic background"

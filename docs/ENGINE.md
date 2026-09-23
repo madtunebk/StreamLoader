@@ -102,7 +102,7 @@ PyTorch forward hooks — see `inference/generate_rust.py`):
   design and was checked against cudarc's actual source before relying
   on it, not assumed.
 - **Cross-stream event handoff without any `torch.cuda.synchronize()`**:
-  proven with a standalone test (`inference/test_dlpack.py`) *before*
+  proven with a standalone test (`inference/tests/test_dlpack.py`) *before*
   building the real engine — an async H2D copy on our own stream, a CUDA
   event recorded on it, that event awaited by PyTorch's raw stream
   pointer via the raw driver API, then a `torch.Tensor` read back with no

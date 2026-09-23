@@ -1,6 +1,0 @@
-Create a wildly imaginative speech bubble containing exactly the text “prompt-ul tău aici”.
-The speech bubble must remain clearly recognizable, but reinterpret it in an unexpected, original way — it could be made of light, liquid glass, energy, clouds, impossible geometry, holographic material, cosmic matter, machinery, or something entirely unexpected.
-Invent the entire world around it yourself. Surprise me. The background should feel like a scene with a strong visual concept, not generic decoration. Experiment with scale, perspective, lighting, atmosphere, composition, and unusual visual metaphors.
-Do not default to fantasy forests, mushrooms, ornate gold frames, cute scenery, generic magical environments, or conventional UI graphics.
-Avoid the obvious. I want something that makes me think: “I would never have thought of that.”
-The only fixed requirement is that the exact text “prompt-ul tău aici” is clearly readable inside the speech bubble. Everything else is yours to invent.

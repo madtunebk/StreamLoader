@@ -9,15 +9,20 @@ Rust code). This is the strongest test available: not "looks right", not
 """
 
 import json
+import os
 import struct
 import sys
 import time
 
 import torch
+from huggingface_hub import snapshot_download
+
 import streamloader_engine as se
 
-HUB = "/home/nobus/.cache/huggingface/hub/models--black-forest-labs--FLUX.2-klein-9B"
-TRANSFORMER_DIR = f"{HUB}/snapshots/92196c8e11f7b6cf2b7493e037d8c5345c559216/transformer"
+MODEL_ID = "black-forest-labs/FLUX.2-klein-9B"
+SNAPSHOT = snapshot_download(MODEL_ID, allow_patterns=["transformer/*", "*.json", "*.txt"])
+HUB = os.path.dirname(os.path.dirname(SNAPSHOT))  # models--org--name/ -- the engine's trust_root
+TRANSFORMER_DIR = f"{SNAPSHOT}/transformer"
 BUDGET = 20 * 1024 * 1024 * 1024  # 20GB pinned budget (transformer is ~18.16GB)
 
 

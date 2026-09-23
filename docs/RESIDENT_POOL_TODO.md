@@ -7,7 +7,7 @@ Source brief: `prompt.md`. Baseline numbers: `hardware.md`.
 
 Rule for every stage: build (`cargo build --release` in `engine/`), install
 (`maturin develop --release`, see `BUILD.md`), then re-run
-`inference/test_engine_real_model.py` against the real model before moving on.
+`inference/tests/test_engine_real_model.py` against the real model before moving on.
 Stages 1-2 are additive/zero-behavior-change by design — if that test's
 `transfer_count`/`bytes_h2d`/`cache_hits` shape ever changes at those stages,
 stop and treat it as a regression, not progress.
@@ -66,7 +66,7 @@ stop and treat it as a regression, not progress.
     in progress for the §10 benchmark table.
 
 - [x] **Stage 4 — correctness test for stage 3** (2026-09-23)
-  - New `inference/test_resident_pool.py`, same rigor as
+  - New `inference/tests/test_resident_pool.py`, same rigor as
     `test_engine_real_model.py`: byte-exact vs. independent parse for
     EVERY resident block (not just one), at two budgets (1GB — homogeneous
     all-double-stream set; 4GB — mixed double+single set), plus 2 full

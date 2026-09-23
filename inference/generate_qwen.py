@@ -12,24 +12,32 @@ the engine needs to know.
 """
 
 import json
+import os
 
 import torch
 from accelerate import cpu_offload, init_empty_weights
 from diffusers import AutoencoderKLQwenImage21, FlowMatchEulerDiscreteScheduler, QwenImage21Pipeline, QwenImage21Transformer2DModel
+from huggingface_hub import snapshot_download
 from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor
 from PIL import Image
 
 import streamloader_engine as se
 
-HUB = "/home/nobus/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1"
-SNAPSHOT = f"{HUB}/snapshots/790c92633540aa0cb11d9abf19eb46d861714758"
+# No hardcoded local path: resolved (and downloaded if needed) from the
+# caller's own HF cache -- portable across machines.
+MODEL_ID = "Qwen/Qwen-Image-2.1"
+SNAPSHOT = snapshot_download(MODEL_ID, allow_patterns=["transformer/*", "*.json", "*.txt"])
+HUB = os.path.dirname(os.path.dirname(SNAPSHOT))  # models--org--name/ -- the engine's trust_root
 TRANSFORMER_DIR = f"{SNAPSHOT}/transformer"
 
 PROMPT = "This is an RGBA image with transparency. A World pixel art , represent earh. The image has alpha channel and the background is transparent."
 
-
-image_edit  = False
-input_image = Image.open("/home/nobus/Pictures/Wallpapers/1296611123151.jpg")
+# Set to True and point INPUT_IMAGE_PATH at a real file to use
+# QwenImage21Pipeline's reference-image conditioning mode. Off by
+# default -- there's no image shipped with this repo to default to.
+image_edit = False
+INPUT_IMAGE_PATH = "/path/to/your/reference/image.jpg"
+input_image = Image.open(INPUT_IMAGE_PATH) if image_edit else None
 
 ASPECT_RATIOS = {
     # full-size (tested today up to 2048x2048 -- held around 7/12GB VRAM)
@@ -66,11 +74,11 @@ torch.cuda.init()
 stream_ptr = torch.cuda.current_stream().cuda_stream
 
 # --- ordinary diffusers loading for everything except the transformer ---
-scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(SNAPSHOT, subfolder="scheduler")
-processor = Qwen3VLProcessor.from_pretrained(SNAPSHOT, subfolder="processor")
-text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(SNAPSHOT, subfolder="text_encoder", dtype=torch.bfloat16)
+scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_ID, subfolder="scheduler")
+processor = Qwen3VLProcessor.from_pretrained(MODEL_ID, subfolder="processor")
+text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(MODEL_ID, subfolder="text_encoder", dtype=torch.bfloat16)
 cpu_offload(text_encoder, execution_device=device)
-vae = AutoencoderKLQwenImage21.from_pretrained(SNAPSHOT, subfolder="vae", dtype=torch.bfloat16)
+vae = AutoencoderKLQwenImage21.from_pretrained(MODEL_ID, subfolder="vae", dtype=torch.bfloat16)
 vae.enable_slicing()  # bounds peak VRAM for batch>1 (decodes one image at a time)
 vae.enable_tiling()   # bounds peak VRAM for large single-image resolutions (e.g. 2048x2048)
 cpu_offload(vae, execution_device=device)
