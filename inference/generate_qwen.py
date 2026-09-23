@@ -24,11 +24,22 @@ HUB = "/home/nobus/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1"
 SNAPSHOT = f"{HUB}/snapshots/790c92633540aa0cb11d9abf19eb46d861714758"
 TRANSFORMER_DIR = f"{SNAPSHOT}/transformer"
 
-PROMPT = "A neon shop sign that reads \"QWEN IMAGE 2.1\", rainy night, reflections on wet pavement"
-SEED = 42
-STEPS = 20
+PROMPT = (
+    "Create a high-impact 16:9 action-comedy poster with a neon sunset city chase, "
+    "glossy blockbuster lighting, and crystal-clear typography. Center a fierce Chihuahua "
+    "in biker gear riding a galloping brown horse, leading snarling tactical dogs and "
+    "glowing rainbow-maned unicorns, with helicopters, muscle cars, palm trees, wet-road "
+    "reflections, sparks, dust, and motion blur; headline: \"FAST & FURIOUS: CHIHUAHUA "
+    "DRIFT — THE UNICORN INCIDENT,\" side slogans: \"REAL DOGS CHASE RAINBOWS TOO.\" and "
+    "\"SMALL DOG. BIG ENERGY.\", and bottom tag: \"Family isn’t who you ride with. "
+    "Family is who you WEE WUUU with.\""
+)
+SEED = 8888
+STEPS = 48
 RESIDENT_GB = 2.0
-OUT = "inference/output/qwen_out.png"
+WIDTH = 1280
+HEIGHT = 720
+OUT = "inference/output/qwen_chihuahua_drift_48steps.png"
 
 device = torch.device("cuda:0")
 torch.cuda.init()
@@ -67,8 +78,8 @@ pipe = QwenImage21Pipeline(
 with torch.no_grad():
     image = pipe(
         prompt=PROMPT,
-        width=1024,
-        height=1024,
+        width=WIDTH,
+        height=HEIGHT,
         num_inference_steps=STEPS,
         generator=torch.Generator(device="cpu").manual_seed(SEED),
     ).images[0]

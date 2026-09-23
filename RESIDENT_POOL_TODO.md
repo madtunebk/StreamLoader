@@ -370,6 +370,23 @@ transformers" design goal from earlier today: a brand-new architecture,
 never seen before this session, worked through the SAME Rust engine
 with zero Rust changes, just new Python glue + one config list.
 
+**Step-count finding (user's rule of thumb, confirmed)**: unlike
+FLUX.2-klein (step-distilled, ~18-20 steps is enough), Qwen-Image-2.1 is
+NOT distilled (`num_inference_steps` pipeline default is 40) and needs
+more steps for clean small-text rendering. Same 1280x720 "Chihuahua
+Drift" poster prompt/seed at three step counts, 2GB resident:
+
+| Steps | time | s/it steady | side-caption text |
+| --- | --- | --- | --- |
+| 20 | 54s | ~2.73-2.84s | one side caption garbled/overlapping |
+| 30 | 83s | ~2.81-2.85s | side caption readable but rough |
+| 48 | 132s | ~2.76-2.82s | **every text element perfectly legible** |
+
+s/it is flat across step counts (as expected, steps don't change
+per-step engine load), only total time scales. Practical rule for this
+model: **30 steps = functional minimum, 45-50 = full quality**,
+matching the user's own observation exactly.
+
 ## Open questions before stage 5 (not before stage 3 anymore)
 
 - Re-run 2GB and/or 4GB at least once more each to establish whether the
