@@ -133,6 +133,13 @@ def main():
     # behavior exactly (no resident blocks, identical to before this was
     # added). Used for the §10 benchmark sweep -- e.g. --resident-gb 1.
     parser.add_argument("--resident-gb", type=float, default=0.0)
+    # Batched generation: the Rust engine only ever serves WEIGHT tensors
+    # (no batch dimension), so it's fully agnostic to batch size -- only
+    # the activations/latents PyTorch itself allocates scale with this,
+    # which is workspace VRAM the engine has no visibility into (see the
+    # review's §7). Default 1 keeps existing single-image behavior and
+    # output naming identical.
+    parser.add_argument("--batch", type=int, default=1)
     args = parser.parse_args()
 
     torch.cuda.init()
@@ -152,22 +159,30 @@ def main():
     load_time = time.time() - t0
     print(f"\ntotal load time (pipeline + engine + hooks): {load_time:.2f}s")
 
-    print(f"\ngenerating {args.width}x{args.height}: {args.prompt!r} (seed={args.seed})")
+    print(f"\ngenerating {args.width}x{args.height} x{args.batch}: {args.prompt!r} (seed={args.seed})")
     generator = torch.Generator(device="cpu").manual_seed(args.seed)
     t0 = time.time()
     with torch.no_grad():
-        image = pipe(
+        images = pipe(
             prompt=args.prompt,
             width=args.width,
             height=args.height,
             num_inference_steps=args.steps,
+            num_images_per_prompt=args.batch,
             generator=generator,
-        ).images[0]
+        ).images
     gen_time = time.time() - t0
-    print(f"generation time (steady-state, post-warmup): {gen_time:.2f}s")
+    print(f"generation time (steady-state, post-warmup): {gen_time:.2f}s ({gen_time/args.batch:.2f}s/image)")
 
-    image.save(args.out)
-    print(f"saved to {args.out}")
+    if args.batch == 1:
+        images[0].save(args.out)
+        print(f"saved to {args.out}")
+    else:
+        base, ext = args.out.rsplit(".", 1)
+        for i, image in enumerate(images):
+            out_path = f"{base}_{i}.{ext}"
+            image.save(out_path)
+        print(f"saved {args.batch} images to {base}_0.{ext} .. {base}_{args.batch-1}.{ext}")
 
     stats = engine.stats()
     print("\n=== engine stats (whole run) ===")
@@ -178,7 +193,7 @@ def main():
     print(f"  VRAM bytes (engine):     {stats['vram_bytes']/1e9:.3f} GB")
     print(f"  resident bytes:          {stats['resident_bytes']/1e9:.3f} GB")
     print(f"  resident hits:           {stats['resident_hits']}")
-    print(f"\nload_time={load_time:.2f}s generation_time={gen_time:.2f}s resident_gb={args.resident_gb:.2f}")
+    print(f"\nload_time={load_time:.2f}s generation_time={gen_time:.2f}s resident_gb={args.resident_gb:.2f} batch={args.batch}")
 
 
 if __name__ == "__main__":

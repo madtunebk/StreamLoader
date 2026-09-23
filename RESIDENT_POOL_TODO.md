@@ -181,6 +181,55 @@ these points is re-run to check its own variance. This is exactly the
 kind of claim `prompt.md` says not to make until benchmarks demonstrate
 it repeatably, not just once.
 
+## Evidence the 4GB "regression" was noise, not real (user's own re-run)
+
+User ran 4GB resident again independently (different prompt, seed=55555,
+20 steps not 16). Full numbers, verified exactly against our own
+formulas:
+
+- Same knapsack selection as before (`transformer_blocks.0-3` +
+  `single_transformer_blocks.0`, 3.926GB) — confirms the selection is
+  deterministic/reproducible, not prompt-dependent (expected, since it's
+  purely a function of block sizes, not model input).
+- `transfer_count=540` = 27 non-resident blocks × 20 steps, exact.
+- `bytes_h2d=270.449GB` = (17.45 − 3.926)GB/step × 20 steps, exact.
+- `resident_hits=181` = 21 (block 0: one initial prefetch + 20
+  `get_block` calls) + 40×4 (blocks 1/2/3 and `single.0`: 20 `prefetch` +
+  20 `get_block` each) = 181, exact — confirms the "21 + 40×(n-1
+  contiguous/chained resident blocks)" hit-counting formula generalizes
+  beyond the one case it was first derived from.
+- Steady-state **3.30s/it** (tqdm) — *better* than the original 16-step
+  sweep's own 4GB measurement (~3.45-3.47s/it) at the exact same resident
+  block set, and roughly on par with the sweep's best point (2GB,
+  ~3.4s/it). Different prompt/seed/step-count so not strictly
+  apples-to-apples, but this is real evidence *against* treating the
+  original 4GB dip as a confirmed regression tied to that specific block
+  set. Current best read: 2-6GB is one broad "good" zone, and the
+  ordering between points within it in any single run is mostly noise.
+
+## Batching (`--batch`, added to generate_rust.py, orthogonal to ResidentPool)
+
+Added `num_images_per_prompt`/`--batch` support since the Rust engine only
+serves weight tensors (no batch dimension) — confirmed engine stats
+(H2D/transfer_count) are byte-identical between batch=1 and batch=2 at the
+same resident budget (251.256GB/480 transfers, 2GB resident, both cases).
+
+Tested batch=2 at 2GB resident, 16 steps: 117.90s total = 58.95s/image,
+vs. 57.85s for a single batch=1 run at the same settings — **no speedup
+from batching**, just linear scaling (steady-state ~7.28s/it at batch=2
+vs. ~3.4s/it at batch=1, ratio ≈2.1x). Confirms the compute-bound
+conclusion from earlier: batching only pays off when the GPU has spare
+compute capacity to fill; this card is already saturated at batch=1, so
+a bigger batch just serializes more work rather than overlapping it.
+**Practical takeaway**: for generating many images (10-20), a large
+batch is not the right lever on this hardware — no throughput gain, and
+real OOM risk from activations/attention scaling with batch size, likely
+before even a modest batch size given how tight VRAM already is at
+higher resident budgets. Two parallel processes (one per physical GPU,
+`device_ordinal=0`/`1` — `ENGINE.md` currently scopes dual-GPU out, but
+the parameter already exists) would give genuine 2x throughput instead.
+Not implemented/tested yet.
+
 ## Open questions before stage 5 (not before stage 3 anymore)
 
 - Re-run 2GB and/or 4GB at least once more each to establish whether the
