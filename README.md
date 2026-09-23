@@ -1,4 +1,12 @@
-# streamloader
+# RustStream
+
+A Rust checkpoint loader (`streamloader`) plus a GPU weight-streaming
+engine built on top of it (`engine/`) — together, they let a DiT
+transformer checkpoint larger than a GPU's VRAM still run real inference,
+streaming weight blocks in just ahead of when each one executes rather
+than requiring the whole model resident at once.
+
+## `streamloader`: the loader crate
 
 A Rust library and CLI that opens original SafeTensors checkpoints (single
 file, sharded with a `*.index.json`, or a directory of implicit shards),
@@ -31,6 +39,37 @@ the inference scripts that drive it (`inference/`), see `docs/ENGINE.md`.
 - [`docs/hardware.md`](docs/hardware.md) — baseline hardware numbers this
   work was measured against
 - [`docs/prompt.md`](docs/prompt.md) — the original ResidentPool task brief
+
+## The GPU engine, in short
+
+`engine/` is a second crate (`streamloader-engine`) built on top of this
+loader: a pinned-host-cache + reusable-VRAM-buffer weight-streaming engine
+that serves a real DiT transformer's weights to a live PyTorch/diffusers
+forward pass via DLPack, with CUDA-event-based prefetch — so a checkpoint
+larger than the GPU's VRAM can still run inference, streaming blocks in
+just ahead of when each one executes. `ResidentPool` (docs/RESIDENT_POOL_TODO.md)
+extends this with an optional static VRAM cache for the blocks used most,
+cutting H2D traffic and steady-state generation time on top of streaming
+alone.
+
+Real, measured results on a single RTX 3060 12GB:
+- **FLUX.2-klein-9B** (18.16GB transformer): streaming alone already beats
+  the plain-diffusers baseline; adding a 2GB ResidentPool budget cuts
+  generation time further (~9% faster than the 0GB-resident baseline at
+  the sweep's best point). Past ~6-8GB resident, gains flatten or reverse
+  as VRAM pressure and allocator overhead start to dominate — see
+  `docs/RESIDENT_POOL_TODO.md` for the full budget sweep, including a real
+  bug this work found and fixed (a CUDA stream-synchronization gap in
+  engine teardown, unrelated to ResidentPool itself, only surfaced by
+  creating a second engine instance in one process).
+- **Qwen-Image-2.1** (a second, unrelated DiT architecture, released days
+  before this was tested): the same engine, unmodified, streams it
+  correctly with only new Python glue and a one-line block-family config
+  change — no changes to `engine/src/*.rs` at all. Confirms the engine's
+  design generalizes across DiT transformers, not just one model family.
+
+See `docs/ENGINE.md` for the architecture and correctness evidence, and
+`docs/RESIDENT_POOL_TODO.md` for the full benchmark log.
 
 ## Build
 
@@ -190,14 +229,23 @@ rule.
   plus a separate pinned cache of the same block, neither ever evicted)
   because it has no persistent cache of any kind to double.
 
-## Limitations / what this is not
+## Limitations / what this crate is not
+
+This section describes the `streamloader` loader crate (`src/`) alone —
+see [The GPU engine, in short](#the-gpu-engine-in-short) above for what
+`engine/` adds on top of it.
 
 - Not an inference engine: no attention, sampling, VAE, or CUDA compute
   of any kind.
 - No GPU transfer, pinned-memory staging, or CUDA-event-based buffer
-  reuse — CPU-only.
-- No Python bindings (a later milestone).
+  reuse — CPU-only. (`engine/` does exactly this, as a separate crate
+  consuming this one's `Model`/`Block` API — see above.)
+- No Python bindings (a later milestone for this crate; `engine/` already
+  has PyO3 bindings for its own, separate API).
 - No automatic model download; point it at checkpoints already on disk.
+  (The Python inference scripts in `inference/` do resolve/download
+  models via `huggingface_hub.snapshot_download` — that's their own
+  behavior, not this crate's.)
 - `verify`'s BLAKE3 checksums are a correctness/reproducibility tool, not
   a benchmark of storage or transfer bandwidth.
 
