@@ -129,6 +129,10 @@ def main():
     # useful range; the pipeline's own default (50) is more than this
     # architecture needs. Kept overridable, not hardcoded.
     parser.add_argument("--steps", type=int, default=20)
+    # Stage 3 (ResidentPool, static/init-time-only): 0 keeps today's
+    # behavior exactly (no resident blocks, identical to before this was
+    # added). Used for the §10 benchmark sweep -- e.g. --resident-gb 1.
+    parser.add_argument("--resident-gb", type=float, default=0.0)
     args = parser.parse_args()
 
     torch.cuda.init()
@@ -138,8 +142,10 @@ def main():
     t0 = time.time()
     pipe, transformer = build_pipeline(device)
 
-    print(f"initializing Rust engine from {TRANSFORMER_DIR} (budget={PINNED_BUDGET/1e9:.1f}GB, {VRAM_SLOTS} VRAM slots)...")
-    engine = se.Engine(TRANSFORMER_DIR, PINNED_BUDGET, VRAM_SLOTS, 0, HUB)
+    resident_budget = int(args.resident_gb * 1024**3)
+    print(f"initializing Rust engine from {TRANSFORMER_DIR} (budget={PINNED_BUDGET/1e9:.1f}GB, {VRAM_SLOTS} VRAM slots, resident={args.resident_gb:.2f}GB)...")
+    engine = se.Engine(TRANSFORMER_DIR, PINNED_BUDGET, VRAM_SLOTS, 0, HUB, None, resident_budget)
+    print(f"resident blocks chosen: {engine.resident_block_ids()}")
     print(f"engine stats after init: {engine.stats()}")
     attach_engine(transformer, engine, stream_ptr)
 
@@ -170,7 +176,9 @@ def main():
     print(f"  cache hits:              {stats['cache_hits']}")
     print(f"  pinned host bytes:       {stats['pinned_bytes']/1e9:.3f} GB")
     print(f"  VRAM bytes (engine):     {stats['vram_bytes']/1e9:.3f} GB")
-    print(f"\nload_time={load_time:.2f}s generation_time={gen_time:.2f}s")
+    print(f"  resident bytes:          {stats['resident_bytes']/1e9:.3f} GB")
+    print(f"  resident hits:           {stats['resident_hits']}")
+    print(f"\nload_time={load_time:.2f}s generation_time={gen_time:.2f}s resident_gb={args.resident_gb:.2f}")
 
 
 if __name__ == "__main__":

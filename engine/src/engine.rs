@@ -94,6 +94,17 @@ pub struct Stats {
     pub cache_hits: u64,
     pub pinned_bytes: u64,
     pub vram_bytes: u64,
+    /// Total bytes of the blocks chosen resident at init (§8's static
+    /// knapsack selection). Fixed for the engine's whole lifetime in
+    /// stage 3 -- there is no eviction yet, so this never changes after
+    /// `new()` returns.
+    pub resident_bytes: u64,
+    /// Incremented every time `issue_transfer` resolves a block from the
+    /// resident pool instead of the streaming ring. Deliberately separate
+    /// from `cache_hits` (a ring cache hit still required a prior
+    /// transfer this run; a resident hit never transfers at all) -- see
+    /// the review's §9 caution about not conflating the two.
+    pub resident_hits: u64,
 }
 
 /// One real H2D transfer's identity + GPU-side timing handles. Populated
@@ -107,9 +118,12 @@ pub struct Stats {
 struct BlockTiming {
     id: String,
     bytes: u64,
-    /// Always `false` today (no resident pool exists yet); kept here so
-    /// a future residency flag doesn't require changing this struct's
-    /// shape or the Python-facing tuple layout again.
+    /// Always `false`: only the streaming path (a real H2D transfer)
+    /// pushes a `BlockTiming` entry at all -- a resident-pool hit
+    /// (`issue_transfer`'s other branch) never transfers, so it never
+    /// reaches this struct. Kept as an explicit field anyway so the
+    /// Python-facing tuple shape (`block_timings()`) doesn't need to
+    /// change if timing ever needs to distinguish transfer *kinds*.
     resident: bool,
     start: CudaEvent,
     end: CudaEvent,
@@ -139,6 +153,14 @@ pub struct RustEngine {
     blocks: HashMap<String, BlockMeta>,
     block_order: Vec<String>,
     shared_slot: Option<VramSlot>,
+    /// Blocks chosen resident at init (§8's static knapsack, stage 3).
+    /// Disjoint from `slots` by construction: a resident block is never
+    /// placed in the streaming ring, and `issue_transfer` checks this map
+    /// *before* the ring scan so a resident block id can never appear in
+    /// both places. Never mutated after `new()` returns in stage 3 -- no
+    /// eviction, no promotion, matching the "safe, synchronous, init-time
+    /// only" pattern `shared_slot` already uses.
+    resident: HashMap<String, VramSlot>,
     slots: Vec<VramSlot>,
     next_slot: usize,
     stats: Stats,
@@ -170,6 +192,7 @@ impl RustEngine {
         device_ordinal: usize,
         trust_root: Option<&str>,
         block_families: Option<Vec<String>>,
+        resident_budget_bytes: u64,
     ) -> Result<Self> {
         let model = Model::open_with(
             path,
@@ -216,7 +239,6 @@ impl RustEngine {
         let mut blocks: HashMap<String, BlockMeta> = HashMap::new();
         let mut block_order: Vec<String> = Vec::new();
         let mut offset: u64 = 0;
-        let mut max_block_bytes: u64 = 0;
         let mut shared_bytes: u64 = 0;
 
         for block in &ordered_blocks {
@@ -251,7 +273,6 @@ impl RustEngine {
             if block.id == UNASSIGNED {
                 shared_bytes = block_bytes;
             } else {
-                max_block_bytes = max_block_bytes.max(block_bytes);
                 block_order.push(block.id.clone());
             }
             blocks.insert(
@@ -273,7 +294,7 @@ impl RustEngine {
             vram_bytes += shared_bytes;
             let src = unsafe {
                 std::slice::from_raw_parts(
-                    pinned_base.add(shared_meta_offset(shared_meta)),
+                    pinned_base.add(block_pinned_start_offset(shared_meta)),
                     shared_bytes as usize,
                 )
             };
@@ -291,6 +312,79 @@ impl RustEngine {
         } else {
             None
         };
+
+        // Stage 3: static, init-time-only ResidentPool. Selection is a
+        // first-fit-decreasing knapsack by block size -- every non-shared
+        // block executes exactly once per diffusion step (verified against
+        // the real FLUX.2 forward pass, see the review's §8), so keeping
+        // any block resident saves exactly that block's own bytes every
+        // step, forever; there is no per-step eviction decision to make in
+        // this stage, only a one-time "which bytes fit the budget" choice.
+        // Sorting by size descending and taking whatever still fits, in
+        // order, is a standard bin-packing heuristic and (with only two
+        // distinct block sizes in this model) lands at or very near the
+        // exact optimum.
+        let mut by_size_desc: Vec<(&String, u64)> = block_order
+            .iter()
+            .map(|id| (id, blocks[id].total_bytes))
+            .collect();
+        by_size_desc.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut resident_ids: Vec<String> = Vec::new();
+        let mut resident_bytes_total: u64 = 0;
+        for (id, bytes) in &by_size_desc {
+            if resident_bytes_total + bytes <= resident_budget_bytes {
+                resident_ids.push((*id).clone());
+                resident_bytes_total += bytes;
+            }
+        }
+
+        let mut resident: HashMap<String, VramSlot> = HashMap::new();
+        for id in &resident_ids {
+            let meta = &blocks[id];
+            let bytes = meta.total_bytes;
+            let dev_ptr = alloc_device(&transfer_stream, bytes)?;
+            vram_bytes += bytes;
+            let src = unsafe {
+                std::slice::from_raw_parts(
+                    pinned_base.add(block_pinned_start_offset(meta)),
+                    bytes as usize,
+                )
+            };
+            unsafe { cu_result::memcpy_htod_async(dev_ptr, src, transfer_stream.cu_stream()) }?;
+            let ev = ctx.new_event(None)?;
+            ev.record(&transfer_stream)?;
+            // One-time init cost, same precedent as `shared_slot` above --
+            // valid here specifically BECAUSE this only ever runs once,
+            // synchronously, before any streaming/prefetch protocol
+            // starts (see the review's §5: this pattern is unsafe to
+            // reuse for a mid-run promotion, but correct at init).
+            ev.synchronize()?;
+            resident.insert(
+                id.clone(),
+                VramSlot {
+                    device_ptr: dev_ptr,
+                    capacity: bytes,
+                    occupant: Some(id.clone()),
+                    ready_event: ev,
+                    free_event: None,
+                },
+            );
+        }
+
+        // Ring sizing only needs to cover blocks that actually still
+        // stream -- a block promoted to the resident pool above no longer
+        // needs ring capacity budgeted for it, which is exactly the
+        // "ring already wastes VRAM padding smaller blocks to the max
+        // size" finding from the review's §3: shrinking the max over the
+        // *remaining* streaming set (not all blocks) avoids compounding
+        // that waste on top of what ResidentPool is already saving.
+        let max_block_bytes: u64 = block_order
+            .iter()
+            .filter(|id| !resident.contains_key(*id))
+            .map(|id| blocks[id].total_bytes)
+            .max()
+            .unwrap_or(0);
 
         let slot_count = vram_slots.max(1);
         let mut slots = Vec::with_capacity(slot_count);
@@ -322,11 +416,13 @@ impl RustEngine {
             blocks,
             block_order,
             shared_slot,
+            resident,
             slots,
             next_slot: 0,
             stats: Stats {
                 pinned_bytes: total_bytes,
                 vram_bytes,
+                resident_bytes: resident_bytes_total,
                 ..Default::default()
             },
             block_timings: Vec::new(),
@@ -353,6 +449,13 @@ impl RustEngine {
 
     pub fn block_ids(&self) -> Vec<String> {
         self.block_order.clone()
+    }
+
+    /// Block ids chosen resident at init (stage 3's static knapsack
+    /// selection). Empty when `resident_budget_bytes` was 0 -- the
+    /// default, fully-backward-compatible case.
+    pub fn resident_block_ids(&self) -> Vec<String> {
+        self.resident.keys().cloned().collect()
     }
 
     /// Cyclic next-use distance from `from_block_id` to every non-shared
@@ -405,19 +508,18 @@ impl RustEngine {
         block_id: &str,
         compute_stream_ptr: u64,
     ) -> Result<HashMap<String, Py<PyAny>>> {
-        let slot_idx = self.issue_transfer(block_id)?;
-        let slot = &self.slots[slot_idx];
+        let (device_ptr, ready_event) = self.issue_transfer(block_id)?;
 
         let compute_stream = compute_stream_ptr as cu_sys::CUstream;
         unsafe {
             cu_result::stream::wait_event(
                 compute_stream,
-                slot.ready_event.cu_event(),
+                ready_event,
                 cu_sys::CUevent_wait_flags::CU_EVENT_WAIT_DEFAULT,
             )
         }?;
 
-        self.build_tensors(py, block_id, slot.device_ptr)
+        self.build_tensors(py, block_id, device_ptr)
     }
 
     pub fn get_shared(&self, py: Python<'_>) -> Result<HashMap<String, Py<PyAny>>> {
@@ -432,6 +534,13 @@ impl RustEngine {
     /// event recorded here is what the *next* transfer into this slot
     /// waits on before overwriting it.
     pub fn mark_block_done(&mut self, block_id: &str, compute_stream_ptr: u64) -> Result<()> {
+        // Resident blocks are never evicted/overwritten in stage 3, so
+        // there is no slot to protect and nothing to record -- a
+        // `free_event` only exists to gate the *next* transfer into a
+        // slot, and a resident block's slot never has a next occupant.
+        if self.resident.contains_key(block_id) {
+            return Ok(());
+        }
         let slot_idx = self.slot_holding(block_id)?;
         let ev = self.ctx.new_event(None)?;
         let compute_stream = compute_stream_ptr as cu_sys::CUstream;
@@ -447,18 +556,30 @@ impl RustEngine {
             .ok_or_else(|| EngineError::BlockNotResident(block_id.to_string()))
     }
 
-    /// Ensures `block_id`'s bytes are resident in some slot (issuing a
-    /// transfer if needed) and returns that slot's index. A cache hit
-    /// (already resident, transfer already issued by a prior call) costs
-    /// nothing beyond the lookup.
-    fn issue_transfer(&mut self, block_id: &str) -> Result<usize> {
+    /// Ensures `block_id`'s bytes are resident somewhere on the GPU
+    /// (issuing a streaming transfer if needed) and returns
+    /// `(device_ptr, ready_event)` for it. `ready_event` is the raw CUDA
+    /// event handle the caller's compute stream must wait on before
+    /// reading -- returned by value (not a borrow of `self`) specifically
+    /// so this method can answer for either the resident pool or the
+    /// streaming ring without the caller needing to know which.
+    fn issue_transfer(&mut self, block_id: &str) -> Result<(u64, cu_sys::CUevent)> {
+        // Resident pool checked FIRST, before the ring scan: a resident
+        // block is never placed in `self.slots`, never re-transferred,
+        // never counted as a ring cache hit.
+        if let Some(slot) = self.resident.get(block_id) {
+            self.stats.resident_hits += 1;
+            return Ok((slot.device_ptr, slot.ready_event.cu_event()));
+        }
+
         if let Some(idx) = self
             .slots
             .iter()
             .position(|s| s.occupant.as_deref() == Some(block_id))
         {
             self.stats.cache_hits += 1;
-            return Ok(idx);
+            let slot = &self.slots[idx];
+            return Ok((slot.device_ptr, slot.ready_event.cu_event()));
         }
 
         let meta = self
@@ -530,7 +651,7 @@ impl RustEngine {
 
         self.stats.bytes_h2d += block_bytes;
         self.stats.transfer_count += 1;
-        Ok(idx)
+        Ok((self.slots[idx].device_ptr, self.slots[idx].ready_event.cu_event()))
     }
 
     fn build_tensors(
@@ -577,7 +698,7 @@ impl RustEngine {
     }
 }
 
-fn shared_meta_offset(meta: &BlockMeta) -> usize {
+fn block_pinned_start_offset(meta: &BlockMeta) -> usize {
     meta.tensors
         .iter()
         .map(|t| t.pinned_offset)
@@ -592,7 +713,26 @@ fn alloc_device(stream: &Arc<CudaStream>, bytes: u64) -> Result<u64> {
 
 impl Drop for RustEngine {
     fn drop(&mut self) {
-        for slot in self.slots.drain(..).chain(self.shared_slot.take()) {
+        // MUST happen before freeing anything below. `alloc_device`
+        // (used for every ring/shared/resident slot) zeroes its buffer
+        // via an async memset on `transfer_stream` that `new()` never
+        // waits for -- freeing a device pointer while that memset (or
+        // any other pending async op targeting it) is still in flight is
+        // a real, silent race, not a hypothetical one: reproduced by
+        // creating a second `RustEngine` in the same process right after
+        // dropping the first, with zero block fetches in between --
+        // CUDA_ERROR_ILLEGAL_ADDRESS on the second engine's own init,
+        // fixed by exactly this synchronize. Pre-existing gap (present
+        // before ResidentPool), only ever surfaced once something
+        // (stage 4's correctness test) actually created two engines
+        // per process instead of one engine per OS process.
+        let _ = self.transfer_stream.synchronize();
+        for slot in self
+            .slots
+            .drain(..)
+            .chain(self.shared_slot.take())
+            .chain(self.resident.drain().map(|(_, slot)| slot))
+        {
             let _ = unsafe { cu_result::free_sync(slot.device_ptr) };
         }
     }

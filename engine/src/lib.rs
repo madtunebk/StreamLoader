@@ -22,7 +22,7 @@ struct Engine {
 #[pymethods]
 impl Engine {
     #[new]
-    #[pyo3(signature = (path, budget_bytes, vram_slots=2, device_ordinal=0, trust_root=None, block_families=None))]
+    #[pyo3(signature = (path, budget_bytes, vram_slots=2, device_ordinal=0, trust_root=None, block_families=None, resident_budget_bytes=0))]
     fn new(
         path: &str,
         budget_bytes: u64,
@@ -30,14 +30,29 @@ impl Engine {
         device_ordinal: usize,
         trust_root: Option<&str>,
         block_families: Option<Vec<String>>,
+        resident_budget_bytes: u64,
     ) -> PyResult<Self> {
         Ok(Engine {
-            inner: RustEngine::new(path, budget_bytes, vram_slots, device_ordinal, trust_root, block_families)?,
+            inner: RustEngine::new(
+                path,
+                budget_bytes,
+                vram_slots,
+                device_ordinal,
+                trust_root,
+                block_families,
+                resident_budget_bytes,
+            )?,
         })
     }
 
     fn block_ids(&self) -> Vec<String> {
         self.inner.block_ids()
+    }
+
+    /// Block ids the static ResidentPool selected at init (stage 3).
+    /// Empty when `resident_budget_bytes` was 0 (the default).
+    fn resident_block_ids(&self) -> Vec<String> {
+        self.inner.resident_block_ids()
     }
 
     /// (block_id, cyclic_distance) for every non-shared block, relative
@@ -79,6 +94,8 @@ impl Engine {
             ("cache_hits".to_string(), s.cache_hits),
             ("pinned_bytes".to_string(), s.pinned_bytes),
             ("vram_bytes".to_string(), s.vram_bytes),
+            ("resident_bytes".to_string(), s.resident_bytes),
+            ("resident_hits".to_string(), s.resident_hits),
         ])
     }
 
