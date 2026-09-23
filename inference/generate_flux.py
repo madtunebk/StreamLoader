@@ -32,6 +32,7 @@ import torch
 from accelerate import cpu_offload, init_empty_weights
 from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline, Flux2Transformer2DModel, FlowMatchEulerDiscreteScheduler
 from huggingface_hub import snapshot_download
+from PIL import Image
 from transformers import AutoTokenizer, Qwen3ForCausalLM
 
 import streamloader_engine as se
@@ -112,6 +113,10 @@ def main():
     # review's §7). Default 1 keeps existing single-image behavior and
     # output naming identical.
     parser.add_argument("--batch", type=int, default=1)
+    # Flux2KleinPipeline.__call__ takes `image` as its first param --
+    # img2img/reference-conditioning, same mechanism as QwenImage21Pipeline.
+    # Verified from source (pipeline_flux2_klein.py) before wiring this up.
+    parser.add_argument("--image", default=None, help="path to a reference image, enables image-conditioning mode")
     args = parser.parse_args()
 
     torch.cuda.init()
@@ -131,18 +136,21 @@ def main():
     load_time = time.time() - t0
     print(f"\ntotal load time (pipeline + engine + hooks): {load_time:.2f}s")
 
+    payload = {
+        "prompt": args.prompt,
+        "width": args.width,
+        "height": args.height,
+        "num_inference_steps": args.steps,
+        "num_images_per_prompt": args.batch,
+        "generator": torch.Generator(device="cpu").manual_seed(args.seed),
+    }
+    if args.image:
+        payload["image"] = Image.open(args.image)
+
     print(f"\ngenerating {args.width}x{args.height} x{args.batch}: {args.prompt!r} (seed={args.seed})")
-    generator = torch.Generator(device="cpu").manual_seed(args.seed)
     t0 = time.time()
     with torch.no_grad():
-        images = pipe(
-            prompt=args.prompt,
-            width=args.width,
-            height=args.height,
-            num_inference_steps=args.steps,
-            num_images_per_prompt=args.batch,
-            generator=generator,
-        ).images
+        images = pipe(**payload).images
     gen_time = time.time() - t0
     print(f"generation time (steady-state, post-warmup): {gen_time:.2f}s ({gen_time/args.batch:.2f}s/image)")
 
