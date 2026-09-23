@@ -285,6 +285,16 @@ single-image rate would give. Confirms once more: batch never wins on
 this hardware, it only ever costs more per image as it grows, but at
 least now it doesn't crash.
 
+**Cleanest confirmation yet of batch-agnosticism**: batch=1 at the exact
+same config (1.5GB resident, 20 steps, seed=55555) as the earlier
+batch=2 run produced IDENTICAL engine stats down to the last digit
+(`bytes_h2d=322.794GB`, `transfer_count=600`, `resident_hits=61` in
+both). Generation time 72.63s/image (batch=1) vs. 71.23s/image (batch=2,
+same config) — statistically indistinguishable, well within the noise
+already established elsewhere in this sweep. Small batches (1-2) are
+genuinely neutral on this hardware; only large batches (6+) start
+costing measurably more per image.
+
 ## Open questions before stage 5 (not before stage 3 anymore)
 
 - Re-run 2GB and/or 4GB at least once more each to establish whether the
