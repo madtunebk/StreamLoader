@@ -68,3 +68,34 @@ uv run --no-sync inference/generate_flux.py --prompt "..."
 `--no-sync` (or `UV_NO_SYNC=1`) is required — otherwise `uv run` tries to
 reconcile the venv against `pyproject.toml`'s dependency list and won't know
 about the locally-built `streamloader-engine` package.
+
+## Desktop freeze/mouse-lag during model load (harmless, explained)
+
+On a desktop system (not a headless server), the first 1-2 seconds of
+`RustEngine::new()` can make the whole machine feel briefly frozen or
+laggy — observed directly: dropped mouse input events
+(`SYN_DROPPED` in the X server log) right at load time, not during
+generation itself. This is not a bug or a hardware fault — it's
+`cudaHostAlloc`'ing and filling the *entire* pinned host buffer (the
+whole transformer, ~18GB for FLUX.2-klein-9B, ~14GB for Qwen-Image-2.1)
+in one uninterrupted burst: the kernel page-locking that much RAM in one
+call, plus the disk reads that fill it, both run at normal process
+priority and can starve the desktop's input/GUI threads for those couple
+of seconds. (The engine deliberately has no partial/LRU pinned cache —
+see `docs/ENGINE.md` — so this whole-buffer burst is inherent to the
+current design, not something a config flag shrinks.)
+
+If this is disruptive on your machine, lower the process's CPU/IO
+priority so the desktop stays responsive through the load burst — the
+engine finishes just as fast once the system is otherwise idle, it just
+yields immediately if something else needs the CPU or disk:
+
+```bash
+ionice -c3 nice -n 10 uv run --no-sync inference/generate_flux.py --prompt "..."
+```
+
+`ionice -c3` = idle I/O class (yields to any other disk request),
+`nice -n 10` = lower CPU scheduling priority. Verified this doesn't
+change behavior or timing under normal (uncontended) conditions — only
+matters when something else actually wants the CPU/disk at the same
+moment.
