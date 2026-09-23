@@ -170,6 +170,14 @@ def main():
     gen_time = time.time() - t0
     print(f"generation time (steady-state, post-warmup): {gen_time:.2f}s ({gen_time/args.batch:.2f}s/image)")
 
+    # inference/output/ is gitignored (generated content) -- git tracks
+    # no empty directories, so a fresh clone has no such folder at all
+    # until something creates it. Found by an actual clean-clone test,
+    # not assumed: this crashed at the save step otherwise.
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     if args.batch == 1:
         images[0].save(args.out)
         print(f"saved to {args.out}")
