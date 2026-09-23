@@ -52,46 +52,6 @@ def build_meta_transformer():
     return model
 
 
-def attach_engine(transformer, engine, stream_ptr):
-    block_ids = engine.block_ids()
-    pos_of = {bid: i for i, bid in enumerate(block_ids)}
-
-    def block_module(block_id):
-        family, idx = block_id.rsplit(".", 1)
-        return getattr(transformer, family)[int(idx)]
-
-    def make_pre_hook(block_id):
-        def hook(module, args, kwargs):
-            tensors = engine.get_block(block_id, stream_ptr)
-            transformer.load_state_dict(tensors, strict=False, assign=True)
-            pos = pos_of[block_id] + PREFETCH_AHEAD
-            if pos < len(block_ids):
-                engine.prefetch(block_ids[pos])
-            return args, kwargs
-
-        return hook
-
-    def make_post_hook(block_id):
-        def hook(module, args, output):
-            engine.mark_block_done(block_id, stream_ptr)
-            return output
-
-        return hook
-
-    handles = []
-    for bid in block_ids:
-        mod = block_module(bid)
-        handles.append(mod.register_forward_pre_hook(make_pre_hook(bid), with_kwargs=True))
-        handles.append(mod.register_forward_hook(make_post_hook(bid)))
-
-    shared = engine.get_shared()
-    missing, unexpected = transformer.load_state_dict(shared, strict=False, assign=True)
-    print(f"shared weights loaded: {len(shared)} tensors (missing={len(missing)} unexpected={len(unexpected)})")
-
-    engine.prefetch(block_ids[0])
-    return handles
-
-
 def build_pipeline(device):
     print("loading scheduler/tokenizer/text_encoder/vae (real weights, separate offload policy)...")
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(SNAPSHOT, subfolder="scheduler")
@@ -160,7 +120,7 @@ def main():
     engine = se.Engine(TRANSFORMER_DIR, PINNED_BUDGET, VRAM_SLOTS, 0, HUB, None, resident_budget)
     print(f"resident blocks chosen: {engine.resident_block_ids()}")
     print(f"engine stats after init: {engine.stats()}")
-    attach_engine(transformer, engine, stream_ptr)
+    se.attach_engine(transformer, engine, stream_ptr, prefetch_ahead=PREFETCH_AHEAD)
 
     load_time = time.time() - t0
     print(f"\ntotal load time (pipeline + engine + hooks): {load_time:.2f}s")

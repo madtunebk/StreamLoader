@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 /inference/quantized_model/
 *.safetensors
+*.so

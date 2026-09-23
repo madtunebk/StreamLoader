@@ -295,6 +295,34 @@ already established elsewhere in this sweep. Small batches (1-2) are
 genuinely neutral on this hardware; only large batches (6+) start
 costing measurably more per image.
 
+## `attach_engine` moved into the package (DRY, not a new feature)
+
+Was duplicated identically in `generate_rust.py` and `generate_simple.py`.
+Moved into `engine/streamloader_engine/__init__.py` (hand-written, not
+maturin's auto-generated stub) as `streamloader_engine.attach_engine(transformer,
+engine, compute_stream_ptr, prefetch_ahead=1)` — pure Python, calls only
+the already-exposed Rust methods (`block_ids`/`get_block`/`prefetch`/
+`mark_block_done`/`get_shared`), no Rust changes needed.
+
+Maturin note: this required converting to its "mixed Rust/Python" layout.
+The working recipe (after one false start): put `__init__.py` at
+`engine/streamloader_engine/__init__.py` directly (NOT `engine/python/streamloader_engine/`
+— that's a different, also-valid maturin convention but not the one this
+maturin version auto-detects without extra config). No `Cargo.toml`
+changes needed once the file is in the right place; `maturin develop`
+then installs it as an editable `.pth` pointing straight at `engine/`,
+so further pure-Python edits to `__init__.py` take effect without
+rebuilding (only Rust changes still need `maturin develop --release`).
+
+Both call sites updated (`se.attach_engine(...)` instead of a local
+`attach_engine` function); `generate_rust.py` lost one diagnostic print
+(`shared weights loaded: N tensors...`) as a result, since that detail
+lived inside the old local function — acceptable, `stats()` still covers
+everything else. Re-verified: `test_engine_real_model.py` and
+`test_resident_pool.py` both still pass byte-exact, and both
+`generate_rust.py` and `generate_simple.py` still generate correctly
+(same resident_hits/transfer_count formulas hold).
+
 ## Open questions before stage 5 (not before stage 3 anymore)
 
 - Re-run 2GB and/or 4GB at least once more each to establish whether the

@@ -5,6 +5,8 @@ mechanism as generate_rust.py, stripped of CLI/argparse/stats printing.
 Edit the constants below directly, like a plain diffusers example script.
 """
 
+import json
+
 import torch
 from accelerate import cpu_offload, init_empty_weights
 from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline, Flux2Transformer2DModel, FlowMatchEulerDiscreteScheduler
@@ -36,7 +38,6 @@ vae.enable_slicing()
 cpu_offload(vae, execution_device=device)
 
 # --- transformer: meta weights, real weights served by the Rust engine ---
-import json
 cfg = json.load(open(f"{TRANSFORMER_DIR}/config.json"))
 cfg.pop("_class_name", None)
 cfg.pop("_diffusers_version", None)
@@ -45,35 +46,7 @@ with init_empty_weights():
 transformer.eval()
 
 engine = se.Engine(TRANSFORMER_DIR, 20 * 1024**3, 2, 0, HUB, None, int(RESIDENT_GB * 1024**3))
-
-block_ids = engine.block_ids()
-pos_of = {bid: i for i, bid in enumerate(block_ids)}
-
-
-def block_module(block_id):
-    family, idx = block_id.rsplit(".", 1)
-    return getattr(transformer, family)[int(idx)]
-
-
-for bid in block_ids:
-    mod = block_module(bid)
-
-    def pre_hook(module, args, kwargs, bid=bid):
-        transformer.load_state_dict(engine.get_block(bid, stream_ptr), strict=False, assign=True)
-        pos = pos_of[bid] + 1
-        if pos < len(block_ids):
-            engine.prefetch(block_ids[pos])
-        return args, kwargs
-
-    def post_hook(module, args, output, bid=bid):
-        engine.mark_block_done(bid, stream_ptr)
-        return output
-
-    mod.register_forward_pre_hook(pre_hook, with_kwargs=True)
-    mod.register_forward_hook(post_hook)
-
-transformer.load_state_dict(engine.get_shared(), strict=False, assign=True)
-engine.prefetch(block_ids[0])
+se.attach_engine(transformer, engine, stream_ptr)
 
 # --- ordinary diffusers pipeline call, same as any other model ---
 pipe = Flux2KleinPipeline(
