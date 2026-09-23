@@ -25,7 +25,7 @@ stop and treat it as a regression, not progress.
     single-stream 436.2MB (clean 2:1, matches the review's §3 hypothesis);
     H2D bandwidth ~13.35GB/s, matching `hardware.md`'s ~13.54GiB/s PCIe burst.
   - Full 16-step real generation re-run afterward
-    (`inference/generate_rust.py`) reproduced `hardware.md` almost exactly:
+    (`inference/generate_flux.py`) reproduced `hardware.md` almost exactly:
     279.173GB H2D, 512 transfers, 497 cache hits — identical to baseline.
 
 - [x] **Stage 2 — static next-use table** (2026-09-22)
@@ -57,7 +57,7 @@ stop and treat it as a regression, not progress.
     *non*-resident subset, so promoting a large block out of the ring
     also shrinks the ring's own footprint (directly addresses the §3
     padding-waste finding, not just adds a new allocation on top of it).
-  - New `resident_block_ids()` accessor; `generate_rust.py` gained
+  - New `resident_block_ids()` accessor; `generate_flux.py` gained
     `--resident-gb` (default 0.0, same backward-compat contract).
   - Verified: byte-exact vs. independent parse across 3 repeated fetch
     cycles on a resident block, `transfer_count` stays 0 for it throughout
@@ -152,9 +152,9 @@ before it was resident, so avoiding it saves bytes but not much wall
 time. Needs 3GB/4GB points to see whether this flattens further or
 reverses.
 
-`resident_hits=17`/`49` (not 32/64) is correct, not a bug: `generate_rust.py`'s
+`resident_hits=17`/`49` (not 32/64) is correct, not a bug: `generate_flux.py`'s
 prefetch-ahead only fires when `pos_of[block]+1 < len(block_ids)`
-(`inference/generate_rust.py`'s `make_pre_hook`) — the last block
+(`inference/generate_flux.py`'s `make_pre_hook`) — the last block
 (`single_transformer_blocks.23`) never prefetches block 0 for the next
 step's wraparound. So block 0 gets one `prefetch()` ever (the initial one
 in `attach_engine`) plus one `get_block()` per step = 1 + 16 = 17; block 1
@@ -207,7 +207,7 @@ formulas:
   set. Current best read: 2-6GB is one broad "good" zone, and the
   ordering between points within it in any single run is mostly noise.
 
-## Batching (`--batch`, added to generate_rust.py, orthogonal to ResidentPool)
+## Batching (`--batch`, added to generate_flux.py, orthogonal to ResidentPool)
 
 Added `num_images_per_prompt`/`--batch` support since the Rust engine only
 serves weight tensors (no batch dimension) — confirmed engine stats
@@ -250,7 +250,7 @@ original review predicted it would.
 which decodes a batch one image at a time (`if self.use_slicing and
 z.shape[0] > 1`) instead of the whole batch's latents at once — exactly
 the mechanism for reducing VAE decode's peak VRAM with batch>1. It's
-`False` by default and `generate_rust.py` never calls it. Note this is
+`False` by default and `generate_flux.py` never calls it. Note this is
 **not** the same as `enable_tiling()` (also unused, also off by default)
 — tiling splits large spatial dimensions per image, slicing splits large
 batches; batch=6's OOM was a batch-size problem, so slicing is the
@@ -274,7 +274,7 @@ since it's an island) = 61 total. Formula generalizes correctly to
 non-contiguous resident sets, not just contiguous chains.
 
 **Fix verified: `vae.enable_slicing()` added to `build_pipeline()` in
-`generate_rust.py`, batch=6 re-run with the EXACT crashing settings
+`generate_flux.py`, batch=6 re-run with the EXACT crashing settings
 (2GB resident, 20 steps, seed=55555) now succeeds — all 6 images saved.**
 The same 2 early OOM warnings still appear (those are the transformer's
 own activation pressure, unaffected by VAE slicing), but the run no
@@ -297,7 +297,7 @@ costing measurably more per image.
 
 ## `attach_engine` moved into the package (DRY, not a new feature)
 
-Was duplicated identically in `generate_rust.py` and `generate_simple.py`.
+Was duplicated identically in `generate_flux.py` and `generate_simple.py`.
 Moved into `engine/streamloader_engine/__init__.py` (hand-written, not
 maturin's auto-generated stub) as `streamloader_engine.attach_engine(transformer,
 engine, compute_stream_ptr, prefetch_ahead=1)` — pure Python, calls only
@@ -315,12 +315,12 @@ so further pure-Python edits to `__init__.py` take effect without
 rebuilding (only Rust changes still need `maturin develop --release`).
 
 Both call sites updated (`se.attach_engine(...)` instead of a local
-`attach_engine` function); `generate_rust.py` lost one diagnostic print
+`attach_engine` function); `generate_flux.py` lost one diagnostic print
 (`shared weights loaded: N tensors...`) as a result, since that detail
 lived inside the old local function — acceptable, `stats()` still covers
 everything else. Re-verified: `test_engine_real_model.py` and
 `test_resident_pool.py` both still pass byte-exact, and both
-`generate_rust.py` and `generate_simple.py` still generate correctly
+`generate_flux.py` and `generate_simple.py` still generate correctly
 (same resident_hits/transfer_count formulas hold).
 
 ## Cross-architecture validation: Qwen-Image-2.1 (not just FLUX.2)

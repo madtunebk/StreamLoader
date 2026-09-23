@@ -21,7 +21,7 @@ alone. It's also required so `uv` doesn't try to manage
 `streamloader_engine` and `torchvision`, neither of which is a normal
 PyPI dependency it fully understands here.
 
-`streamloader_engine` (imported by `inference/generate_rust.py`) is a PyO3
+`streamloader_engine` (imported by `inference/generate_flux.py`) is a PyO3
 extension crate at `engine/`. It is not a PyPI package and `uv sync` will
 never install it — it has to be built and installed into the venv manually
 with `maturin`.
@@ -62,7 +62,7 @@ cd /path/to/RustStream
 
 ```bash
 cd /path/to/RustStream
-uv run --no-sync inference/generate_rust.py --prompt "..."
+uv run --no-sync inference/generate_flux.py --prompt "..."
 ```
 
 `--no-sync` (or `UV_NO_SYNC=1`) is required — otherwise `uv run` tries to

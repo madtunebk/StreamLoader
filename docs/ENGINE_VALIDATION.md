@@ -2,7 +2,7 @@
 
 Companion to `VALIDATION.md` (which covers the CPU-only loader). This
 covers only the GPU engine (`engine/`) and its integration into a real
-diffusers pipeline (`inference/generate_rust.py`).
+diffusers pipeline (`inference/generate_flux.py`).
 
 ## Environment
 
@@ -26,7 +26,7 @@ diffusers pipeline (`inference/generate_rust.py`).
 | The engine reads the real checkpoint correctly through the whole pipeline (mmap → pinned → VRAM → DLPack → `torch.Tensor`) | `inference/tests/test_engine_real_model.py` against the real 18.16GB model: all 16 tensors of `transformer_blocks.7` (872,416,256 bytes) byte-identical to an independent, from-scratch Python parse of the actual shard file (not reusing any Rust or `safetensors`-package code). |
 | Buffer reuse (2 VRAM slots, 32 blocks) does not corrupt data | Same test: forced a genuine eviction (fetched 2 more distinct blocks to cycle both ring slots), asserted `transfer_count` actually incremented (i.e. the eviction was real, not accidentally still a cache hit), then re-verified all 16 tensors byte-identical to the first fetch. |
 | The full pipeline, with the transformer entirely served by the Rust engine, produces correct output | Pixel diff against the plain-diffusers baseline (`inference/generate.py`, same prompt/seed/resolution/steps/dtype): **0 pixels differ, out of 1,048,576** (1024×1024, RGB). See below. |
-| No silent fallback on engine failure | Observed directly during development: pointing the engine at the real model *without* `trust_root` raises `RuntimeError` (the loader's symlink-escape rejection, propagated through `EngineError`/`PyErr`) and the script exits nonzero — never fell through to any other loading path, because there isn't one in `generate_rust.py`. |
+| No silent fallback on engine failure | Observed directly during development: pointing the engine at the real model *without* `trust_root` raises `RuntimeError` (the loader's symlink-escape rejection, propagated through `EngineError`/`PyErr`) and the script exits nonzero — never fell through to any other loading path, because there isn't one in `generate_flux.py`. |
 | A real bug this testing caught (not a hypothetical) | `RustEngine::new()` originally let the pinned host allocation's owner (`PinnedHostSlice`, a local variable) drop at the end of the function, freeing the buffer immediately. The shared-block transfer (which happens *during* `new()`) worked; the first real per-block fetch afterward read through the now-dangling pointer and segfaulted. Caught by `test_engine_real_model.py`, fixed by storing the `PinnedHostSlice` in the engine struct. |
 
 ## Benchmark: baseline vs. Rust-engine, identical inputs
@@ -40,7 +40,7 @@ run recorded earlier; see the note on step count below), same attention
 backend (whatever diffusers/torch selects by default — not overridden in
 either run).
 
-| | Baseline (`generate.py`, `enable_sequential_cpu_offload()`) | Rust engine (`generate_rust.py`) |
+| | Baseline (`generate.py`, `enable_sequential_cpu_offload()`) | Rust engine (`generate_flux.py`) |
 |---|---|---|
 | Load time | not separately measured in the baseline run | 3.82s (pipeline components + engine init + hook attachment) |
 | Generation time (50 steps + VAE decode) | 278.1s | **195.43s** |
@@ -86,7 +86,7 @@ The comparison above intentionally used 50 steps to match the
 already-recorded baseline run exactly. Separately, `black-forest-labs/FLUX.2-klein-9B`'s
 own `config.json` (`is_distilled: true`, `guidance_embeds: false`) is a
 step-distilled model; ~18-20 steps is the useful range for it, and
-`generate_rust.py` now defaults to `--steps 20` rather than the
+`generate_flux.py` now defaults to `--steps 20` rather than the
 pipeline's 50. A second demo run at `--steps 50` (a different, "crazy"
 prompt, not used for the correctness/speed comparison above) measured
 **186.22s** generation time with the same per-block-transfer pattern
@@ -113,7 +113,7 @@ required the actual RTX 3060 and the actual downloaded model.
   (e.g. prefetching more than one block ahead with only 2 ring slots,
   which the current protocol does not defend against — see the
   "sync contract" note in `engine/src/engine.rs`'s `issue_transfer`).
-  The demonstrated usage (`generate_rust.py`) always prefetches exactly
+  The demonstrated usage (`generate_flux.py`) always prefetches exactly
   one block ahead and marks each block done immediately after its
   forward returns, which is the pattern the 2-slot ring is correct for.
 - Any dtype other than BF16 (the only dtype this real model actually

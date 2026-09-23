@@ -65,7 +65,7 @@ RustEngine::new()
 ```
 
 Per-block sequence (`get_block`/`prefetch`/`mark_block_done`, called from
-PyTorch forward hooks — see `inference/generate_rust.py`):
+PyTorch forward hooks — see `inference/generate_flux.py`):
 
 1. `prefetch(next_block_id)` — issue an async H2D copy for the *next*
    block into whichever VRAM slot is next in the ring, on the transfer
@@ -169,13 +169,13 @@ uv run --no-sync python test_dlpack.py
 uv run --no-sync python test_engine_real_model.py
 
 # full pipeline, transformer served by the Rust engine:
-uv run --no-sync python generate_rust.py --prompt "..." --seed 0 --steps 20 \
+uv run --no-sync python generate_flux.py --prompt "..." --seed 0 --steps 20 \
     --out output.png
 ```
 
-(Equivalently, without `uv`: `.venv/bin/python generate_rust.py ...`.)
+(Equivalently, without `uv`: `.venv/bin/python generate_flux.py ...`.)
 
-`generate_rust.py` hardcodes this session's local model path; point
+`generate_flux.py` hardcodes this session's local model path; point
 `TRANSFORMER_DIR`/`HUB` at your own checkpoint to reuse it elsewhere.
 `--steps` defaults to 20 (this is a step-distilled model per its own
 `config.json`: `is_distilled: true`, `guidance_embeds: false` — the
@@ -184,7 +184,7 @@ needs).
 
 If the engine can't start (bad path, budget too small, no CUDA device),
 `se.Engine(...)` raises `RuntimeError` and the script crashes — there is
-no fallback to any other loading path anywhere in `generate_rust.py`.
+no fallback to any other loading path anywhere in `generate_flux.py`.
 
 ## Honest performance results
 
