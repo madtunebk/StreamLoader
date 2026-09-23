@@ -17,6 +17,7 @@ import torch
 from accelerate import cpu_offload, init_empty_weights
 from diffusers import AutoencoderKLQwenImage21, FlowMatchEulerDiscreteScheduler, QwenImage21Pipeline, QwenImage21Transformer2DModel
 from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor
+from PIL import Image
 
 import streamloader_engine as se
 
@@ -24,24 +25,43 @@ HUB = "/home/nobus/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1"
 SNAPSHOT = f"{HUB}/snapshots/790c92633540aa0cb11d9abf19eb46d861714758"
 TRANSFORMER_DIR = f"{SNAPSHOT}/transformer"
 
-PROMPT = (
-    "Create a high-impact 16:9 action-comedy poster with a neon sunset city chase, "
-    "glossy blockbuster lighting, and crystal-clear typography. Center a fierce Chihuahua "
-    "in biker gear riding a galloping brown horse, leading snarling tactical dogs and "
-    "glowing rainbow-maned unicorns, with helicopters, muscle cars, palm trees, wet-road "
-    "reflections, sparks, dust, and motion blur; headline: \"FAST & FURIOUS: CHIHUAHUA "
-    "DRIFT — THE UNICORN INCIDENT,\" side slogans: \"REAL DOGS CHASE RAINBOWS TOO.\" and "
-    "\"SMALL DOG. BIG ENERGY.\", and bottom tag: \"Family isn’t who you ride with. "
-    "Family is who you WEE WUUU with.\""
-)
-SEED = 8888
-STEPS = 48
-RESIDENT_GB = 2.0
-WIDTH = 1280
-HEIGHT = 720
-OUT = "inference/output/qwen_chihuahua_drift_48steps.png"
+PROMPT = "This is an RGBA image with transparency. A World pixel art , represent earh. The image has alpha channel and the background is transparent."
 
-device = torch.device("cuda:0")
+
+image_edit  = False
+input_image = Image.open("/home/nobus/Pictures/Wallpapers/1296611123151.jpg")
+
+ASPECT_RATIOS = {
+    # full-size (tested today up to 2048x2048 -- held around 7/12GB VRAM)
+    "1:1":  (2048, 2048),
+    "4:3":  (2400, 1792),
+    "3:4":  (1792, 2400),
+    "3:2":  (2528, 1696),
+    "2:3":  (1696, 2528),
+    "16:9": (2752, 1536),
+    "9:16": (1536, 2752),
+    # budget presets -- lighter/faster, for weaker cards or a quick test
+    "1:1-lo":  (1024, 1024),
+    "4:3-lo":  (1152, 896),
+    "3:4-lo":  (896, 1152),
+    "16:9-lo": (1280, 720),
+    "9:16-lo": (720, 1280),
+}
+ASPECT = "1:1-lo"  # pick a key from ASPECT_RATIOS above
+
+SEED = 20260923
+STEPS = 40
+RESIDENT_GB = 4.0
+WIDTH, HEIGHT = ASPECT_RATIOS[ASPECT]
+
+GB = 1024**3
+PINNED_BUDGET_BYTES = 20 * GB  # transformer is ~14.23GB, this just needs headroom above that
+VRAM_SLOTS = 2
+DEVICE_ORDINAL = 0
+
+OUT = "inference/output/qwen_dragon_sticker.png"
+
+device = torch.device(f"cuda:{DEVICE_ORDINAL}")
 torch.cuda.init()
 stream_ptr = torch.cuda.current_stream().cuda_stream
 
@@ -51,7 +71,8 @@ processor = Qwen3VLProcessor.from_pretrained(SNAPSHOT, subfolder="processor")
 text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(SNAPSHOT, subfolder="text_encoder", dtype=torch.bfloat16)
 cpu_offload(text_encoder, execution_device=device)
 vae = AutoencoderKLQwenImage21.from_pretrained(SNAPSHOT, subfolder="vae", dtype=torch.bfloat16)
-vae.enable_slicing()
+vae.enable_slicing()  # bounds peak VRAM for batch>1 (decodes one image at a time)
+vae.enable_tiling()   # bounds peak VRAM for large single-image resolutions (e.g. 2048x2048)
 cpu_offload(vae, execution_device=device)
 
 # --- transformer: meta weights, real weights served by the Rust engine ---
@@ -63,9 +84,9 @@ with init_empty_weights():
 transformer.eval()
 
 engine = se.Engine(
-    TRANSFORMER_DIR, 20 * 1024**3, 2, 0, HUB,
+    TRANSFORMER_DIR, PINNED_BUDGET_BYTES, VRAM_SLOTS, DEVICE_ORDINAL, HUB,
     ["transformer_blocks"],  # only block family Qwen-Image-2.1 has -- see module docstring
-    int(RESIDENT_GB * 1024**3),
+    int(RESIDENT_GB * GB),
 )
 se.attach_engine(transformer, engine, stream_ptr)
 
@@ -75,14 +96,19 @@ pipe = QwenImage21Pipeline(
     transformer=transformer,
 )
 
+payload = {
+    "prompt": PROMPT,
+    "width":  WIDTH,
+    "height": HEIGHT,
+    "num_inference_steps": STEPS,
+    "generator": torch.Generator(device="cpu").manual_seed(SEED)
+}
+
+if image_edit:
+    payload['image'] = input_image
+
 with torch.no_grad():
-    image = pipe(
-        prompt=PROMPT,
-        width=WIDTH,
-        height=HEIGHT,
-        num_inference_steps=STEPS,
-        generator=torch.Generator(device="cpu").manual_seed(SEED),
-    ).images[0]
+    image = pipe(**payload).images[0]
 
 image.save(OUT)
 print(f"saved to {OUT}")
