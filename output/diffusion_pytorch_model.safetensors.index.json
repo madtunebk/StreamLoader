@@ -1,0 +1,17 @@
+{
+  "metadata": {
+    "format": "pt",
+    "source": "streamloader make_fixture example"
+  },
+  "weight_map": {
+    "shared.time_embed.weight": "diffusion_pytorch_model-00002-of-00002.safetensors",
+    "single_transformer_blocks.0.proj.bias": "diffusion_pytorch_model-00002-of-00002.safetensors",
+    "single_transformer_blocks.0.proj.weight": "diffusion_pytorch_model-00001-of-00002.safetensors",
+    "transformer_blocks.0.attn.qkv.bias": "diffusion_pytorch_model-00001-of-00002.safetensors",
+    "transformer_blocks.0.attn.qkv.weight": "diffusion_pytorch_model-00001-of-00002.safetensors",
+    "transformer_blocks.10.attn.qkv.bias": "diffusion_pytorch_model-00002-of-00002.safetensors",
+    "transformer_blocks.10.attn.qkv.weight": "diffusion_pytorch_model-00001-of-00002.safetensors",
+    "transformer_blocks.2.attn.qkv.bias": "diffusion_pytorch_model-00001-of-00002.safetensors",
+    "transformer_blocks.2.attn.qkv.weight": "diffusion_pytorch_model-00001-of-00002.safetensors"
+  }
+}

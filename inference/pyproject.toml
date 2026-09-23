@@ -1,0 +1,27 @@
+[project]
+name = "streamloader-inference"
+version = "0.1.0"
+description = "Inference scripts wiring streamloader-engine into a real diffusers pipeline"
+requires-python = "==3.12.*"
+dependencies = [
+    "torch==2.14.0",
+    "diffusers==0.40.0",
+    "transformers==5.16.1",
+    "accelerate==1.14.0",
+    "bitsandbytes==0.50.2",
+    "pillow==12.3.0",
+    "sentencepiece==0.2.2",
+    "protobuf==7.36.1",
+    "safetensors==0.8.0",
+    "numpy==2.5.3",
+    # streamloader-engine (0.1.0) is also installed in .venv, editable
+    # from ../engine, via `maturin develop --release` -- it's a locally
+    # built Rust/PyO3 extension, not a PyPI package, so it's not listed
+    # here as a normal dependency. `uv sync` would not know how to
+    # rebuild it (../engine has no pyproject.toml, only Cargo.toml), so
+    # always run with `--no-sync` (or `UV_NO_SYNC=1`) to use this .venv
+    # as-is rather than have uv try to reconcile it against this list.
+]
+
+[tool.uv]
+package = false

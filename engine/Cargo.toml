@@ -1,0 +1,14 @@
+[package]
+name = "streamloader-engine"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "streamloader_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+streamloader = { path = ".." }
+cudarc = { version = "0.19.9", features = ["cuda-13000"] }
+pyo3 = { version = "0.27", features = ["extension-module"] }
+thiserror = "2.0"
