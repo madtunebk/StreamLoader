@@ -328,7 +328,7 @@ impl RustEngine {
             .iter()
             .map(|id| (id, blocks[id].total_bytes))
             .collect();
-        by_size_desc.sort_by(|a, b| b.1.cmp(&a.1));
+        by_size_desc.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         let mut resident_ids: Vec<String> = Vec::new();
         let mut resident_bytes_total: u64 = 0;
