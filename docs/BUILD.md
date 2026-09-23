@@ -35,16 +35,16 @@ explicitly skips that lookup.
 ## One-time setup
 
 ```bash
-cd /path/to/RustStream
+cd /path/to/StreamLoader
 uv add --dev maturin
 ```
 
 ## Build + install (run this any time engine/src changes)
 
 ```bash
-cd /path/to/RustStream/engine
-VIRTUAL_ENV=/path/to/RustStream/.venv \
-  /path/to/RustStream/.venv/bin/maturin develop --release
+cd /path/to/StreamLoader/engine
+VIRTUAL_ENV=/path/to/StreamLoader/.venv \
+  /path/to/StreamLoader/.venv/bin/maturin develop --release
 ```
 
 This compiles the crate and installs it editable into
@@ -54,14 +54,14 @@ rebuild automatically — re-run it after every change to `engine/src/*.rs`.
 ## Verify
 
 ```bash
-cd /path/to/RustStream
+cd /path/to/StreamLoader
 .venv/bin/python -c "import streamloader_engine as se; print(se.__file__)"
 ```
 
 ## Run inference
 
 ```bash
-cd /path/to/RustStream
+cd /path/to/StreamLoader
 uv run --no-sync inference/generate_flux.py --prompt "..."
 ```
 

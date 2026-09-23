@@ -1,4 +1,4 @@
-# RustStream
+# StreamLoader
 
 A Rust checkpoint loader (`streamloader`) plus a GPU weight-streaming
 engine built on top of it (`engine/`) — together, they let a DiT
