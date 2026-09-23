@@ -25,6 +25,8 @@ the inference scripts that drive it (`inference/`), see `docs/ENGINE.md`.
 
 ## Documentation
 
+- [`inference/README.md`](inference/README.md) — how to run the
+  inference scripts, including setup **without** `uv` (plain `pip`/`venv`)
 - [`docs/BUILD.md`](docs/BUILD.md) — building/installing the `engine/`
   PyO3 extension and running inference
 - [`docs/ENGINE.md`](docs/ENGINE.md) — the GPU weight-streaming engine
