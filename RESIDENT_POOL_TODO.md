@@ -230,6 +230,61 @@ higher resident budgets. Two parallel processes (one per physical GPU,
 the parameter already exists) would give genuine 2x throughput instead.
 Not implemented/tested yet.
 
+**batch=6 confirmed §11's cross-phase VRAM risk for real** (user's own
+run, 2GB resident, 20 steps, seed=55555): the transformer denoising loop
+survived (2 OOM warnings early on, then stabilized — unlike 8GB's dozens
+of repeated retries), but the run ultimately crashed with an actual OOM
+at **VAE decode** — the exact failure mode §11 named on day one
+("VAE decode happens *after* the transformer's per-step loop and after
+ResidentPool has already claimed its budget... a real cross-phase
+hazard"). It took batch=6's much larger per-phase activation footprint
+to actually cross from "thrashes but survives" (8GB, batch=1) into "hard
+crash", not resident budget alone — same underlying risk, different
+lever. No output files were produced (process exited before any
+`image.save()` call). This is the first real, reproduced crash in the
+whole ResidentPool investigation, and it happened exactly where the
+original review predicted it would.
+
+**Root cause identified, not just diagnosed**: `AutoencoderKLFlux2` has
+`enable_slicing()` (`vae.py:913`, `autoencoder_kl_flux2.py:146,248`),
+which decodes a batch one image at a time (`if self.use_slicing and
+z.shape[0] > 1`) instead of the whole batch's latents at once — exactly
+the mechanism for reducing VAE decode's peak VRAM with batch>1. It's
+`False` by default and `generate_rust.py` never calls it. Note this is
+**not** the same as `enable_tiling()` (also unused, also off by default)
+— tiling splits large spatial dimensions per image, slicing splits large
+batches; batch=6's OOM was a batch-size problem, so slicing is the
+relevant fix, not tiling. One-line, pure-diffusers fix, never implemented
+yet: `vae.enable_slicing()` after building the VAE in `build_pipeline()`.
+
+**Follow-up successful run, no crash**: 1.5GB resident, batch=2, 20
+steps, seed=55555 (two distinct, fully-rendered speech-bubble images,
+different styles). Knapsack picked `transformer_blocks.0` +
+`single_transformer_blocks.0` (1.309GB, matches predicted knapsack fill
+for 1.5GB exactly: one double fits, remaining ~738MB isn't enough for a
+second double but is for one single). `transfer_count=600` (30
+non-resident × 20 steps), `bytes_h2d=322.794GB` (matches (17.45−1.309)
+× 20 predicted). `resident_hits=61` — validates the hit-counting formula
+in a NEW shape: this time the two resident blocks are non-adjacent in
+`block_order` (not a contiguous chain like the 4GB case), so neither
+gets the other's prefetch: `transformer_blocks.0` = 21 (1 initial
+prefetch + 20 get_block, same as always), `single_transformer_blocks.0`
+= 40 (20 prefetch from its own non-resident predecessor + 20 get_block,
+since it's an island) = 61 total. Formula generalizes correctly to
+non-contiguous resident sets, not just contiguous chains.
+
+**Fix verified: `vae.enable_slicing()` added to `build_pipeline()` in
+`generate_rust.py`, batch=6 re-run with the EXACT crashing settings
+(2GB resident, 20 steps, seed=55555) now succeeds — all 6 images saved.**
+The same 2 early OOM warnings still appear (those are the transformer's
+own activation pressure, unaffected by VAE slicing), but the run no
+longer crashes at VAE decode. Cost: 425.30s total = 70.88s/image, worse
+per-image than batch=2 (58.95s/image) — steady-state ~20.74s/it, almost
+exactly the ~20.4s/it a naive 6x-linear-scaling prediction from the
+single-image rate would give. Confirms once more: batch never wins on
+this hardware, it only ever costs more per image as it grows, but at
+least now it doesn't crash.
+
 ## Open questions before stage 5 (not before stage 3 anymore)
 
 - Re-run 2GB and/or 4GB at least once more each to establish whether the

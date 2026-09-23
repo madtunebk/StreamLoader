@@ -101,6 +101,12 @@ def build_pipeline(device):
     cpu_offload(text_encoder, execution_device=device)
 
     vae = AutoencoderKLFlux2.from_pretrained(SNAPSHOT, subfolder="vae", dtype=torch.bfloat16)
+    # Decode one image of the batch at a time instead of all at once --
+    # off by default. This is what actually reduces VAE decode's peak
+    # VRAM for batch>1 (not enable_tiling(), which splits large per-image
+    # spatial dims, not large batches -- irrelevant to the batch=6 OOM
+    # this was added for, see RESIDENT_POOL_TODO.md).
+    vae.enable_slicing()
     cpu_offload(vae, execution_device=device)
 
     print("building meta transformer (0 bytes materialized by diffusers)...")
