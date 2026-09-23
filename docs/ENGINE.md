@@ -151,7 +151,7 @@ cargo build --release                    # sanity check, no Python needed for th
 VIRTUAL_ENV=/path/to/venv maturin develop --release
 ```
 
-`inference/pyproject.toml` describes the venv's contents for `uv run`,
+`pyproject.toml` (repo root) describes the venv's contents for `uv run`,
 but `streamloader-engine` is a locally maturin-built extension (not a
 PyPI package `uv sync` knows how to reproduce — `engine/` has no
 `pyproject.toml`, only `Cargo.toml`), so always pass `--no-sync` (or set
@@ -162,11 +162,11 @@ reconcile it against the dependency list:
 cd inference
 
 # standalone cross-stream correctness proof (no real model needed):
-uv run --no-sync python test_dlpack.py
+uv run --no-sync python tests/test_dlpack.py
 
 # real-model correctness proof (byte-exact vs. an independent parse, plus
 # forced eviction/reuse correctness):
-uv run --no-sync python test_engine_real_model.py
+uv run --no-sync python tests/test_engine_real_model.py
 
 # full pipeline, transformer served by the Rust engine:
 uv run --no-sync python generate_flux.py --prompt "..." --seed 0 --steps 20 \

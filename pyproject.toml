@@ -1,25 +1,48 @@
 [project]
 name = "ruststream"
 version = "0.1.0"
-description = "Add your description here"
+description = "streamloader (CPU checkpoint loader) + engine/ (GPU weight-streaming) + inference/ (diffusers scripts driving it)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "==3.10.*"
 dependencies = [
-    "accelerate>=1.15.0",
-    # Pinned to git main, NOT a PyPI release: Qwen-Image-2.1 support
-    # (QwenImage21Pipeline/QwenImage21Transformer2DModel/etc, needed by
-    # inference/generate_qwen.py) isn't in 0.40.0, the latest PyPI
-    # release as of 2026-09-23. A bare `uv run` from the repo root syncs
-    # against THIS file -- if it ever reverts to a plain `>=0.40.0` pin,
+    "torch==2.14.0",
+    # diffusers 0.40.0 (latest PyPI release as of 2026-09-23) does not
+    # have QwenImage21Pipeline/QwenImage21Transformer2DModel/etc. --
+    # Qwen-Image-2.1 (released 2026-09-19) is newer than that release.
+    # Pinned to git main instead (0.41.0.dev0); re-verified FLUX.2 still
+    # works identically after this bump before relying on it for
+    # anything Qwen-related. A bare `uv run` anywhere in this repo syncs
+    # against THIS file -- if it ever reverts to a plain version pin,
     # `uv sync` will silently downgrade diffusers back to a PyPI release
-    # and break Qwen-Image-2.1 imports (this happened once already).
+    # and break Qwen-Image-2.1 imports (this happened once already,
+    # before inference/'s own pyproject.toml was merged into this one
+    # specifically to remove the "which file is in scope" ambiguity that
+    # caused it).
     "diffusers @ git+https://github.com/huggingface/diffusers.git",
-    "torch>=2.14.0",
-    "torchvision>=0.29.0",
-    "transformers>=5.17.0",
+    "transformers==5.17.0",
+    "accelerate==1.15.0",
+    "bitsandbytes==0.50.2",
+    "pillow==12.3.0",
+    "sentencepiece==0.2.2",
+    "protobuf==7.36.1",
+    "safetensors==0.8.0",
+    "numpy==2.2.6",
+    # torchvision: required by Qwen3VLProcessor (an internal video
+    # sub-processor import, even though nothing here touches video).
+    "torchvision==0.29.0",
+    # streamloader-engine (0.1.0) is also installed in .venv, editable
+    # from engine/, via `maturin develop --release` -- it's a locally
+    # built Rust/PyO3 extension, not a PyPI package, so it's not listed
+    # here as a normal dependency. `uv sync` would not know how to
+    # rebuild it (engine/ has no pyproject.toml, only Cargo.toml), so
+    # always run with `--no-sync` (or `UV_NO_SYNC=1`) to use this .venv
+    # as-is rather than have uv try to reconcile it against this list.
 ]
 
 [dependency-groups]
 dev = [
     "maturin>=1.15.0",
 ]
+
+[tool.uv]
+package = false

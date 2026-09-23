@@ -38,10 +38,6 @@ the inference scripts that drive it (`inference/`), see `docs/ENGINE.md`.
   [`docs/ENGINE_VALIDATION.md`](docs/ENGINE_VALIDATION.md) — measured
   correctness/performance evidence for the loader and the engine
   respectively
-- [`docs/hardware.md`](docs/hardware.md) — baseline hardware numbers this
-  work was measured against
-- [`docs/prompt.md`](docs/prompt.md) — the original ResidentPool task brief
-
 ## The GPU engine, in short
 
 `engine/` is a second crate (`streamloader-engine`) built on top of this

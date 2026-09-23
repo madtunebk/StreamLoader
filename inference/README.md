@@ -75,11 +75,11 @@ pip install \
   sentencepiece==0.2.2 \
   protobuf==7.36.1 \
   safetensors==0.8.0 \
-  numpy==2.5.3 \
+  numpy==2.2.6 \
   maturin
 
 # diffusers is pinned to git main deliberately, not a typo -- see the
-# comment in inference/pyproject.toml. The PyPI release (0.40.0 as of
+# comment in pyproject.toml (repo root). The PyPI release (0.40.0 as of
 # 2026-09-23) doesn't have Qwen-Image-2.1's classes yet.
 ```
 

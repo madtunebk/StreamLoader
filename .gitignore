@@ -8,3 +8,7 @@ __pycache__/
 *.so
 /inference/output/
 /output/
+# Original session-briefing artifacts (written for the AI, not general
+# repo docs) -- kept locally, not published.
+/docs/prompt.md
+/docs/hardware.md

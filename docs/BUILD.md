@@ -2,24 +2,26 @@
 
 ## Always run `uv run --no-sync` (or set `UV_NO_SYNC=1`) in this repo
 
-**Never run a bare `uv run ...` here, from the repo root OR from
-`inference/`.** Both directories have their own `pyproject.toml`, and a
-bare `uv run` reconciles (`uv sync`s) the venv against whichever one is
-in scope for the path you ran from -- it doesn't just add missing
-packages, it can downgrade or remove what's already installed to match
-that file exactly. This already happened once for real: `diffusers` was
-installed from git main (needed for `inference/generate_qwen.py` --
-Qwen-Image-2.1's classes aren't in any PyPI release yet), then a bare
-`uv run inference/generate_qwen.py --help` from the repo root silently
-reinstalled plain `diffusers==0.40.0` from PyPI over it (matching the
-root `pyproject.toml`'s pin at the time), breaking every Qwen-Image-2.1
-import until it was reinstalled from git again. Both `pyproject.toml`
-(root) and `inference/pyproject.toml` now pin `diffusers` to the git
-source specifically so a sync wouldn't silently regress this again --
-but `--no-sync` is still the actual safety net; don't rely on the pins
-alone. It's also required so `uv` doesn't try to manage
-`streamloader_engine` and `torchvision`, neither of which is a normal
-PyPI dependency it fully understands here.
+**Never run a bare `uv run ...` anywhere in this repo.** There used to
+be two `pyproject.toml` files (root + `inference/`), which caused a real
+incident: a bare `uv run inference/generate_qwen.py --help` from the
+repo root synced against the *root* file's looser `diffusers` pin,
+silently downgrading a deliberately git-installed `diffusers` back to a
+plain PyPI release and breaking every Qwen-Image-2.1 import. They've
+since been merged into one root `pyproject.toml` specifically to remove
+that "which file is in scope" ambiguity.
+
+That fixed *one* cause, not the underlying risk: `uv sync` (which any
+bare `uv run` can trigger) reconciles the venv strictly against
+`pyproject.toml` — including *removing* anything installed that isn't
+listed there. `streamloader_engine` (built locally by `maturin`, not a
+PyPI package) is exactly such a thing: a real `uv sync` run while
+merging the two files removed it from the venv outright, requiring
+`maturin develop --release` to be re-run before anything using it would
+import again. `--no-sync` is what actually prevents this — don't rely on
+the dependency pins alone, and after any deliberate `uv sync` (e.g. after
+editing `pyproject.toml`), always re-run the engine build step below
+before assuming things still work.
 
 `streamloader_engine` (imported by `inference/generate_flux.py`) is a PyO3
 extension crate at `engine/`. It is not a PyPI package and `uv sync` will
