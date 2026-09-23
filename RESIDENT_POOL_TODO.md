@@ -323,6 +323,53 @@ everything else. Re-verified: `test_engine_real_model.py` and
 `generate_rust.py` and `generate_simple.py` still generate correctly
 (same resident_hits/transfer_count formulas hold).
 
+## Cross-architecture validation: Qwen-Image-2.1 (not just FLUX.2)
+
+Confirmed empirically, not just theoretically, that the engine
+generalizes to a genuinely different DiT architecture, downloaded fresh
+today (`Qwen/Qwen-Image-2.1`, 31GB, released 2026-09-19 per its own HF
+commit history):
+
+- **Required diffusers 0.41.0.dev0 (git main)** — the model is too new
+  for 0.40.0 (latest PyPI release at the time). Installed via
+  `uv pip install git+https://github.com/huggingface/diffusers.git`.
+  Re-verified `generate_simple.py` (FLUX.2) still works identically after
+  the upgrade (same ~3.44-3.46s/it) before touching anything Qwen-related
+  — no regression from the diffusers bump.
+- **Architecture differences from FLUX.2, verified from source before
+  running anything**: single block family (`transformer_blocks`, no
+  double/single-stream split), and a KV-cache mode
+  (`kv_cache_mode="extract"` on step 0, `"cached"` after, gated by the
+  checkpoint's own `causal_condition: true` config) enabled BY DEFAULT
+  (`use_kv_cache=True`) for plain text-to-image generation — this is
+  exactly the exception case flagged in the original review's §8.
+  Read the actual pipeline source (`pipeline_qwenimage21.py`) to confirm:
+  `self.transformer(...)` is still called exactly ONCE per denoising
+  step regardless of kv_cache_mode; the cache only changes internal
+  attention math (skip recomputing K/V for the fixed text+condition
+  tokens), never block invocation count or order. Confirms the engine's
+  block-order-determinism assumption holds even here.
+- **New script**: `inference/generate_qwen.py`, same minimal style as
+  `generate_simple.py`, using `se.attach_engine` unchanged (zero Rust
+  code touched, zero engine.rs changes) with
+  `block_families=["transformer_blocks"]`.
+- **One new dependency needed**: `torchvision` (for
+  `Qwen3VLProcessor`'s internal video sub-processor, even though we
+  never touch video) — installed matching the existing torch/cu130
+  build, no torch version change.
+- **First real run: SUCCESS.** 20 steps, 1024x1024, resident=2GB:
+  **58s total, ~3.0-3.02s/it steady** — actually faster per-step than
+  FLUX.2 (~3.4-3.46s/it at similar settings). Output: perfectly legible
+  neon sign text ("QWEN IMAGE 2.1"), correct rainy-night scene, matching
+  the prompt exactly. No correctness issues, no VRAM issues, first try
+  after fixing the two environment gaps above (diffusers version,
+  torchvision).
+
+This is the strongest evidence yet for the "compatible with most DiT
+transformers" design goal from earlier today: a brand-new architecture,
+never seen before this session, worked through the SAME Rust engine
+with zero Rust changes, just new Python glue + one config list.
+
 ## Open questions before stage 5 (not before stage 3 anymore)
 
 - Re-run 2GB and/or 4GB at least once more each to establish whether the

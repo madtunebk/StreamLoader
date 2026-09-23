@@ -5,15 +5,24 @@ description = "Inference scripts wiring streamloader-engine into a real diffuser
 requires-python = "==3.12.*"
 dependencies = [
     "torch==2.14.0",
-    "diffusers==0.40.0",
-    "transformers==5.16.1",
-    "accelerate==1.14.0",
+    # diffusers 0.40.0 (latest PyPI release as of 2026-09-23) does not
+    # have QwenImage21Pipeline/QwenImage21Transformer2DModel/etc. --
+    # Qwen-Image-2.1 (released 2026-09-19) is newer than that release.
+    # Installed from git main instead (0.41.0.dev0); re-verified FLUX.2
+    # (generate_simple.py) still works identically after this bump
+    # before relying on it for anything Qwen-related.
+    "diffusers @ git+https://github.com/huggingface/diffusers.git",
+    "transformers==5.17.0",
+    "accelerate==1.15.0",
     "bitsandbytes==0.50.2",
     "pillow==12.3.0",
     "sentencepiece==0.2.2",
     "protobuf==7.36.1",
     "safetensors==0.8.0",
     "numpy==2.5.3",
+    # torchvision: required by Qwen3VLProcessor (an internal video
+    # sub-processor import, even though nothing here touches video).
+    "torchvision==0.29.0",
     # streamloader-engine (0.1.0) is also installed in .venv, editable
     # from ../engine, via `maturin develop --release` -- it's a locally
     # built Rust/PyO3 extension, not a PyPI package, so it's not listed
