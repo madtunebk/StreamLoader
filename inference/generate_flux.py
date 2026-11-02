@@ -102,10 +102,17 @@ def main():
     # useful range; the pipeline's own default (50) is more than this
     # architecture needs. Kept overridable, not hardcoded.
     parser.add_argument("--steps", type=int, default=20)
-    # Stage 3 (ResidentPool, static/init-time-only): 0 keeps today's
-    # behavior exactly (no resident blocks, identical to before this was
-    # added). Used for the §10 benchmark sweep -- e.g. --resident-gb 1.
-    parser.add_argument("--resident-gb", type=float, default=0.0)
+    # Stage 3 (ResidentPool, static/init-time-only): how many GB of the
+    # transformer to keep permanently resident in VRAM. Resident blocks
+    # are never re-transferred, so every GB resident removes that GB from
+    # the H2D traffic of EVERY denoising step -- the main lever for cutting
+    # CPU->GPU transfer. 0 restores the pure-streaming baseline (whole
+    # model re-transferred every step). Default 4.0 is a safe fit on a 12GB
+    # card alongside the ring+shared slots (~2.4GB) and forward-pass
+    # activations (~2-3GB); raise it if you have more free VRAM, lower it
+    # if you OOM at large resolutions or batch>1. See RESIDENT_POOL_TODO.md
+    # for the full budget sweep (gains flatten past ~6-8GB).
+    parser.add_argument("--resident-gb", type=float, default=4.0)
     # Batched generation: the Rust engine only ever serves WEIGHT tensors
     # (no batch dimension), so it's fully agnostic to batch size -- only
     # the activations/latents PyTorch itself allocates scale with this,
@@ -117,6 +124,17 @@ def main():
     # img2img/reference-conditioning, same mechanism as QwenImage21Pipeline.
     # Verified from source (pipeline_flux2_klein.py) before wiring this up.
     parser.add_argument("--image", default=None, help="path to a reference image, enables image-conditioning mode")
+    # Block-level torch.compile. FLUX on a 3060 is COMPUTE-bound (proven:
+    # halving transfer bytes via weight-only int8 did not speed it up),
+    # so the only real s/it lever is cutting compute -- which is what
+    # torch.compile's kernel fusion does. Compiled per block (not whole
+    # model) so the per-step load_state_dict(assign=True) weight swap
+    # changes tensor data, not graph structure: each block compiles once
+    # on its first step and is reused, rather than recompiling every step.
+    # Same pattern as generate_qwen_compiled.py. Off by default (first run
+    # pays a one-time compile cost); measure --compile vs eager at the
+    # same seed/steps.
+    parser.add_argument("--compile", action="store_true", help="block-level torch.compile the transformer (compute speedup)")
     args = parser.parse_args()
 
     torch.cuda.init()
@@ -132,6 +150,25 @@ def main():
     print(f"resident blocks chosen: {engine.resident_block_ids()}")
     print(f"engine stats after init: {engine.stats()}")
     se.attach_engine(transformer, engine, stream_ptr, prefetch_ahead=PREFETCH_AHEAD)
+
+    if args.compile:
+        # Persistent inductor cache so the compile cost is paid once across
+        # runs, not every process start.
+        os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", os.path.expanduser("~/.cache/torchinductor"))
+        # Compile each DiT block's forward individually. FLUX has two
+        # families: double-stream (transformer_blocks) and single-stream
+        # (single_transformer_blocks). fullgraph=False tolerates the
+        # forward-hook boundary (the engine's pre/post hooks are not part
+        # of the compiled region, so a graph break there is expected and
+        # fine). The streamed weights arrive via assign=True as new tensor
+        # objects each step; compiling the block (stable structure) rather
+        # than the whole model keeps that a data change, not a recompile.
+        n = 0
+        for family in ("transformer_blocks", "single_transformer_blocks"):
+            for block in getattr(transformer, family):
+                block.forward = torch.compile(block.forward, mode="default", fullgraph=False)
+                n += 1
+        print(f"torch.compile enabled on {n} blocks (first step will pay a one-time compile cost)")
 
     load_time = time.time() - t0
     print(f"\ntotal load time (pipeline + engine + hooks): {load_time:.2f}s")
