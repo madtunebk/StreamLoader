@@ -1,106 +1,93 @@
 #!/usr/bin/env python3
-"""
-Real diffusers inference for Qwen-Image-2.1 where the *transformer's*
-weights are served by the Rust engine (streamloader_engine) instead of
-diffusers' own loader/offload machinery -- same mechanism as
-generate_rust.py (FLUX.2), proving the engine generalizes to a different
-DiT architecture with zero changes to engine/src/*.rs:
-
-- transformer is constructed with meta (0-byte) weights via
-  accelerate.init_empty_weights() -- diffusers' loader never materializes
-  a CPU copy of it at all.
-- Rust's Engine owns one pinned host buffer (built directly from the
-  mmap'd checkpoint) and a small ring of reusable VRAM buffers, plus an
-  optional static ResidentPool (see docs/RESIDENT_POOL_TODO.md).
-- Per-block forward hooks (se.attach_engine) pull each block's real CUDA
-  tensors from the engine (DLPack, zero payload copy) and
-  load_state_dict(..., assign=True) them into the meta module right
-  before it runs, then tell the engine the block is done right after.
-- text_encoder and vae are NOT managed by the engine -- ordinary real
-  weights + accelerate.cpu_offload (each runs exactly once per
-  generation, not once per denoising step, so offloading them is
-  essentially free).
-- Qwen-Image-2.1's transformer has only ONE block family
-  (`transformer_blocks`, no double/single-stream split like FLUX) and a
-  flat, deterministic forward loop, verified against the installed
-  diffusers source before this was written -- including that its default
-  KV-cache mode (checkpoint config: causal_condition=true) still calls
-  the transformer exactly once per denoising step, so it doesn't violate
-  the engine's block-order-determinism assumption.
-- If the engine fails to initialize, this script does not catch it and
-  fall back to some other loading path -- it crashes loudly.
-"""
+"""Qwen-Image-2.1 inference with Rust-managed transformer weights."""
 
 import argparse
+import gc
 import json
 import os
 import sys
 import time
 import uuid
+from pathlib import Path
 
 import torch
 from accelerate import cpu_offload, init_empty_weights
-from diffusers import AutoencoderKLQwenImage21, FlowMatchEulerDiscreteScheduler, QwenImage21Pipeline, QwenImage21Transformer2DModel
+from diffusers import (
+    AutoencoderKLQwenImage21,
+    FlowMatchEulerDiscreteScheduler,
+    QwenImage21Pipeline,
+    QwenImage21Transformer2DModel,
+)
 from huggingface_hub import snapshot_download
 from PIL import Image
 from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor
 
 import streamloader_engine as se
 
-# No hardcoded local path: snapshot_download resolves (and downloads if
-# needed) using the caller's own HF cache -- portable across machines,
-# no username/home-directory baked into the script.
+
 MODEL_ID = "Qwen/Qwen-Image-2.1"
-SNAPSHOT = snapshot_download(MODEL_ID, allow_patterns=["transformer/*", "*.json", "*.txt"])
-HUB = os.path.dirname(os.path.dirname(SNAPSHOT))  # models--org--name/ -- needed as the engine's trust_root
-TRANSFORMER_DIR = f"{SNAPSHOT}/transformer"
-PINNED_BUDGET = 20 * 1024 * 1024 * 1024  # transformer is ~14.23GB
+SNAPSHOT = Path(snapshot_download(
+    MODEL_ID,
+    allow_patterns=["transformer/*", "*.json", "*.txt"],
+))
+HUB = SNAPSHOT.parent.parent
+TRANSFORMER_DIR = SNAPSHOT / "transformer"
+
+PINNED_BUDGET = 20 * 1024**3
 VRAM_SLOTS = 2
 PREFETCH_AHEAD = 1
 
-# Aspect-ratio presets, tested today: "full" sizes need vae.enable_tiling()
-# to avoid a real VAE-decode OOM at 2048x2048 (see docs/RESIDENT_POOL_TODO.md);
-# "-lo" presets are lighter/faster, for a quick test or a weaker card.
 ASPECT_RATIOS = {
-    "1:1":  (2048, 2048),
-    "4:3":  (2400, 1792),
-    "3:4":  (1792, 2400),
-    "3:2":  (2528, 1696),
-    "2:3":  (1696, 2528),
-    "16:9": (2752, 1536),
-    "9:16": (1536, 2752),
-    "1:1-lo":  (1024, 1024),
-    "4:3-lo":  (1152, 896),
-    "3:4-lo":  (896, 1152),
-    "16:9-lo": (1280, 720),
-    "9:16-lo": (720, 1280),
+    "1:1": (2048, 2048), "4:3": (2400, 1792),
+    "3:4": (1792, 2400), "3:2": (2528, 1696),
+    "2:3": (1696, 2528), "16:9": (2752, 1536),
+    "9:16": (1536, 2752), "1:1-lo": (1024, 1024),
+    "4:3-lo": (1152, 896), "3:4-lo": (896, 1152),
+    "16:9-lo": (1280, 720), "9:16-lo": (720, 1280),
 }
 
 
 def build_meta_transformer():
-    cfg = json.load(open(f"{TRANSFORMER_DIR}/config.json"))
+    with (TRANSFORMER_DIR / "config.json").open() as f:
+        cfg = json.load(f)
+
     cfg.pop("_class_name", None)
     cfg.pop("_diffusers_version", None)
+
     with init_empty_weights():
         model = QwenImage21Transformer2DModel(**cfg)
+
     model.eval()
+
+    if not all(p.is_meta for p in model.parameters()):
+        raise RuntimeError("Transformer parameters were not all initialized on meta.")
+
     return model
 
 
 def build_pipeline(device):
-    print("loading scheduler/processor/text_encoder/vae (real weights, separate offload policy)...")
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_ID, subfolder="scheduler")
-    processor = Qwen3VLProcessor.from_pretrained(MODEL_ID, subfolder="processor")
+    print("Loading scheduler, processor, text encoder and VAE...")
 
-    text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(MODEL_ID, subfolder="text_encoder", dtype=torch.bfloat16)
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        MODEL_ID, subfolder="scheduler"
+    )
+    processor = Qwen3VLProcessor.from_pretrained(
+        MODEL_ID, subfolder="processor"
+    )
+
+    text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+        MODEL_ID, subfolder="text_encoder", torch_dtype=torch.bfloat16
+    )
     cpu_offload(text_encoder, execution_device=device)
 
-    vae = AutoencoderKLQwenImage21.from_pretrained(MODEL_ID, subfolder="vae", dtype=torch.bfloat16)
-    vae.enable_slicing()  # bounds peak VRAM for batch>1 (decodes one image at a time)
-    vae.enable_tiling()   # bounds peak VRAM for large single-image resolutions (e.g. 2048x2048)
+    vae = AutoencoderKLQwenImage21.from_pretrained(
+        MODEL_ID, subfolder="vae", torch_dtype=torch.bfloat16
+    )
+    vae.enable_slicing()
+    vae.enable_tiling()
     cpu_offload(vae, execution_device=device)
 
-    print("building meta transformer (0 bytes materialized by diffusers)...")
+    print("Building meta transformer...")
     transformer = build_meta_transformer()
 
     pipe = QwenImage21Pipeline(
@@ -116,41 +103,74 @@ def build_pipeline(device):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--prompt", required=True)
-    parser.add_argument("--out", default=f"inference/output/{str(uuid.uuid4())}.png")
+    parser.add_argument("--out", default=f"inference/output/{uuid.uuid4()}.png")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--aspect", choices=sorted(ASPECT_RATIOS), default=None,
-                         help="pick a preset instead of --width/--height")
+    parser.add_argument("--aspect", choices=sorted(ASPECT_RATIOS))
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)
-    # Not step-distilled (unlike FLUX.2-klein): pipeline default is 40.
-    # ~30 is a functional minimum, 45-50 for full-quality small text --
-    # see docs/RESIDENT_POOL_TODO.md's step-count sweep.
     parser.add_argument("--steps", type=int, default=40)
-    parser.add_argument("--resident-gb", type=float, default=0.0)
+    # GB of the transformer kept permanently resident in VRAM. Resident
+    # blocks are never re-transferred, so each GB removes that GB from
+    # every denoising step's H2D traffic. 0 = pure-streaming baseline.
+    # Default 4.0 fits safely on a 12GB card; raise/lower per free VRAM.
+    parser.add_argument("--resident-gb", type=float, default=4.0)
     parser.add_argument("--batch", type=int, default=1)
-    # Reference-image conditioning (QwenImage21Pipeline's `image=` param).
-    parser.add_argument("--image", default=None, help="path to a reference image, enables image-conditioning mode")
+    parser.add_argument("--images", nargs="+", default=None)
     args = parser.parse_args()
 
     if args.aspect:
         args.width, args.height = ASPECT_RATIOS[args.aspect]
 
-    torch.cuda.init()
-    device = torch.device("cuda:0")
-    stream_ptr = torch.cuda.current_stream().cuda_stream
+    if not args.prompt.strip():
+        parser.error("--prompt cannot be empty")
+    if args.width <= 0 or args.height <= 0 or args.width % 16 or args.height % 16:
+        parser.error("--width and --height must be positive multiples of 16")
+    if args.steps < 1 or args.batch < 1 or args.resident_gb < 0:
+        parser.error("--steps and --batch must be positive; --resident-gb cannot be negative")
+    if not Path(args.out).suffix:
+        parser.error("--out must include a file extension, e.g. output.png")
 
-    t0 = time.time()
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable. Check PyTorch and your NVIDIA driver.")
+
+    device = torch.device("cuda:0")
+    torch.cuda.init()
+
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
+    start = time.perf_counter()
+
     pipe, transformer = build_pipeline(device)
 
     resident_budget = int(args.resident_gb * 1024**3)
-    print(f"initializing Rust engine from {TRANSFORMER_DIR} (budget={PINNED_BUDGET/1e9:.1f}GB, {VRAM_SLOTS} VRAM slots, resident={args.resident_gb:.2f}GB)...")
-    engine = se.Engine(TRANSFORMER_DIR, PINNED_BUDGET, VRAM_SLOTS, 0, HUB, ["transformer_blocks"], resident_budget)
-    print(f"resident blocks chosen: {engine.resident_block_ids()}")
-    print(f"engine stats after init: {engine.stats()}")
-    se.attach_engine(transformer, engine, stream_ptr, prefetch_ahead=PREFETCH_AHEAD)
+    print(f"Initializing Rust engine from {TRANSFORMER_DIR}...")
 
-    load_time = time.time() - t0
-    print(f"\ntotal load time (pipeline + engine + hooks): {load_time:.2f}s")
+    engine = se.Engine(
+        str(TRANSFORMER_DIR),
+        PINNED_BUDGET,
+        VRAM_SLOTS,
+        0,
+        str(HUB),
+        ["transformer_blocks"],
+        resident_budget,
+    )
+
+    print("Resident blocks:", engine.resident_block_ids())
+    print("Engine stats:", engine.stats())
+
+    se.attach_engine(
+        transformer,
+        engine,
+        torch.cuda.current_stream(device).cuda_stream,
+        prefetch_ahead=PREFETCH_AHEAD,
+    )
+    # Enable persistent PyTorch compilation cache.
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.expanduser("~/.cache/torchinductor")
+
+    # Compile the transformer.
+    transformer = torch.compile(transformer)
+ 
+    load_time = time.perf_counter() - start
+    print(f"Load time: {load_time:.2f}s")
 
     payload = {
         "prompt": args.prompt,
@@ -160,45 +180,63 @@ def main():
         "num_images_per_prompt": args.batch,
         "generator": torch.Generator(device="cpu").manual_seed(args.seed),
     }
-    if args.image:
-        payload["image"] = Image.open(args.image)
 
-    print(f"\ngenerating {args.width}x{args.height} x{args.batch}: {args.prompt!r} (seed={args.seed})")
-    t0 = time.time()
-    with torch.no_grad():
-        images = pipe(**payload).images
-    gen_time = time.time() - t0
-    print(f"generation time (steady-state, post-warmup): {gen_time:.2f}s ({gen_time/args.batch:.2f}s/image)")
+    reference_images = []
+    try:
+        if args.images:
+            for path in args.images:
+                with Image.open(path) as im:
+                    reference_images.append(im.convert("RGB"))
+            payload["image"] = reference_images
 
-    # inference/output/ is gitignored (generated content) -- git tracks
-    # no empty directories, so a fresh clone has no such folder at all
-    # until something creates it. Found by an actual clean-clone test,
-    # not assumed: this crashed at the save step otherwise.
-    out_dir = os.path.dirname(args.out)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+        print(f"Generating {args.width}x{args.height}, batch={args.batch}...")
+        start = time.perf_counter()
 
-    if args.batch == 1:
-        images[0].save(args.out)
-        print(f"saved to {args.out}")
-    else:
-        base, ext = args.out.rsplit(".", 1)
-        for i, image in enumerate(images):
-            out_path = f"{base}_{i}.{ext}"
-            image.save(out_path)
-        print(f"saved {args.batch} images to {base}_0.{ext} .. {base}_{args.batch-1}.{ext}")
+        with torch.inference_mode():
+            images = pipe(**payload).images
 
-    stats = engine.stats()
-    print("\n=== engine stats (whole run) ===")
-    print(f"  bytes transferred H2D:   {stats['bytes_h2d']/1e9:.3f} GB")
-    print(f"  transfer count:          {stats['transfer_count']}")
-    print(f"  cache hits:              {stats['cache_hits']}")
-    print(f"  pinned host bytes:       {stats['pinned_bytes']/1e9:.3f} GB")
-    print(f"  VRAM bytes (engine):     {stats['vram_bytes']/1e9:.3f} GB")
-    print(f"  resident bytes:          {stats['resident_bytes']/1e9:.3f} GB")
-    print(f"  resident hits:           {stats['resident_hits']}")
-    print(f"\nload_time={load_time:.2f}s generation_time={gen_time:.2f}s resident_gb={args.resident_gb:.2f} batch={args.batch}")
+        torch.cuda.synchronize(device)
+        gen_time = time.perf_counter() - start
+
+        if not images:
+            raise RuntimeError("Pipeline returned no images.")
+
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        if len(images) == 1:
+            images[0].save(out)
+            print(f"Saved: {out}")
+        else:
+            for i, image in enumerate(images):
+                filename = out.with_name(f"{out.stem}_{i}{out.suffix}")
+                image.save(filename)
+                print(f"Saved: {filename}")
+
+        stats = engine.stats()
+        print("\n=== Engine stats ===")
+        for key in (
+            "bytes_h2d", "transfer_count", "cache_hits",
+            "pinned_bytes", "vram_bytes", "resident_bytes", "resident_hits",
+        ):
+            value = stats.get(key)
+            if value is not None:
+                if key.endswith("_bytes") or key == "bytes_h2d":
+                    print(f"{key}: {value / 1e9:.3f} GB")
+                else:
+                    print(f"{key}: {value}")
+
+        print(f"\nload_time={load_time:.2f}s generation_time={gen_time:.2f}s")
+
+    finally:
+        for image in reference_images:
+            image.close()
+        gc.collect()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        sys.exit(130)

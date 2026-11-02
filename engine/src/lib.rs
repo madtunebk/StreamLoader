@@ -49,6 +49,13 @@ impl Engine {
         self.inner.block_ids()
     }
 
+    /// Streaming-ring slot count (not counting the shared slot or
+    /// resident-pool blocks). `attach_engine` reads this to enforce
+    /// `vram_slots > prefetch_ahead`.
+    fn vram_slots(&self) -> usize {
+        self.inner.vram_slots()
+    }
+
     /// Block ids the static ResidentPool selected at init (stage 3).
     /// Empty when `resident_budget_bytes` was 0 (the default).
     fn resident_block_ids(&self) -> Vec<String> {
