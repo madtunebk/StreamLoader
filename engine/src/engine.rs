@@ -451,6 +451,15 @@ impl RustEngine {
         self.block_order.clone()
     }
 
+    /// Number of reusable streaming VRAM slots in the ring (excludes the
+    /// permanent shared slot and any resident-pool blocks). Exposed so the
+    /// Python `attach_engine` can enforce `vram_slots > prefetch_ahead`,
+    /// the invariant that keeps a prefetch from overwriting a ring slot
+    /// whose block is still being read.
+    pub fn vram_slots(&self) -> usize {
+        self.slots.len()
+    }
+
     /// Block ids chosen resident at init (stage 3's static knapsack
     /// selection). Empty when `resident_budget_bytes` was 0 -- the
     /// default, fully-backward-compatible case.
@@ -541,7 +550,21 @@ impl RustEngine {
         if self.resident.contains_key(block_id) {
             return Ok(());
         }
-        let slot_idx = self.slot_holding(block_id)?;
+        // Tolerate a slot that no longer holds this block. With a correct
+        // `vram_slots > prefetch_ahead` configuration (enforced in
+        // `new()`) a block's slot is still its own when its post-hook
+        // runs, so this is normally a real lookup. But a pathological
+        // schedule (e.g. a block whose forward pass is skipped, so its
+        // pre-hook/transfer fired but the matching done never pairs with
+        // a live occupant) must NOT crash the whole generation: the only
+        // thing `mark_block_done` does is arm the `free_event` that gates
+        // the slot's NEXT reuse, and if the block has already been
+        // evicted, that next transfer has already safely waited on the
+        // slot's prior `free_event`. A missing occupant is therefore a
+        // no-op, not an error.
+        let Some(slot_idx) = self.slot_holding(block_id) else {
+            return Ok(());
+        };
         let ev = self.ctx.new_event(None)?;
         let compute_stream = compute_stream_ptr as cu_sys::CUstream;
         unsafe { cu_result::event::record(ev.cu_event(), compute_stream) }?;
@@ -549,11 +572,10 @@ impl RustEngine {
         Ok(())
     }
 
-    fn slot_holding(&self, block_id: &str) -> Result<usize> {
+    fn slot_holding(&self, block_id: &str) -> Option<usize> {
         self.slots
             .iter()
             .position(|s| s.occupant.as_deref() == Some(block_id))
-            .ok_or_else(|| EngineError::BlockNotResident(block_id.to_string()))
     }
 
     /// Ensures `block_id`'s bytes are resident somewhere on the GPU

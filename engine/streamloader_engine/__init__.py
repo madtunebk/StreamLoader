@@ -28,6 +28,37 @@ def attach_engine(transformer, engine, compute_stream_ptr, prefetch_ahead=1):
     is how diffusers names every nn.ModuleList of DiT blocks; this is
     not FLUX-specific.
     """
+    if prefetch_ahead < 1:
+        raise ValueError(f"prefetch_ahead must be >= 1, got {prefetch_ahead}")
+
+    # Ring-slot safety invariant. The engine protects a VRAM slot from
+    # being overwritten while a compute kernel may still be reading it via
+    # a per-slot CUDA `free_event` armed by `mark_block_done`. That event
+    # is only recorded once a block's forward pass has returned. With a
+    # ring of `S` streaming slots and `prefetch_ahead = P`, at most P
+    # transfers are ever in flight ahead of the block currently computing,
+    # so P + 1 distinct blocks (the one running + the P prefetched) must
+    # each own a distinct slot at once. If S <= P, a prefetch wraps the
+    # ring back onto a slot whose block has NOT yet been marked done, and
+    # the engine would overwrite it mid-read -- silent corruption, not a
+    # crash. Require strictly more streaming slots than the prefetch depth
+    # and fail loudly here rather than produce wrong pixels.
+    #
+    # Resident blocks never occupy a ring slot, so they don't count toward
+    # S; `vram_slots` passed to the engine is exactly the streaming ring
+    # size. We can't read it back from the handle, so this check lives at
+    # the call site where both numbers are known -- see generate_*.py,
+    # which pass matching VRAM_SLOTS / PREFETCH_AHEAD constants.
+    vram_slots = getattr(engine, "vram_slots", None)
+    if callable(vram_slots):
+        vram_slots = vram_slots()
+    if vram_slots is not None and vram_slots <= prefetch_ahead:
+        raise ValueError(
+            f"vram_slots ({vram_slots}) must be > prefetch_ahead ({prefetch_ahead}): "
+            f"a {vram_slots}-slot ring cannot hold the running block plus "
+            f"{prefetch_ahead} prefetched blocks without overwriting one still in use"
+        )
+
     block_ids = engine.block_ids()
     pos_of = {bid: i for i, bid in enumerate(block_ids)}
 
